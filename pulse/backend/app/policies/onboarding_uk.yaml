@@ -1,0 +1,41 @@
+# UK overlay for the global boarding pack. New geographies are added by dropping in an overlay like
+# this one — the base pack is never forked, so global controls cannot drift per region.
+pack: onboarding_uk
+overlay_of: onboarding
+version: "1"
+decision_type: boarding
+jurisdictions: [GB]
+effective_from: "2026-01-01"
+owner: uk-compliance
+outcomes: [decline, refer, approve_with_conditions, approve]
+rules:
+  - id: UK-PSC-001
+    description: PSC register does not account for all significant control; discrepancy reportable
+    sop_ref: POL-KYB-002 v4 (UK addendum)
+    when: "kyb.unresolved_ownership_percentage > 10"
+    outcome: refer
+    reason_code: UK_PSC_DISCREPANCY_REPORTABLE
+    reason_text: >-
+      Significant control is unaccounted for on the Companies House PSC register; the discrepancy is
+      reportable to Companies House and must be resolved before boarding.
+    escalate_to: financial_crime_investigations
+
+  - id: UK-FSMA-002
+    description: Regulated financial activity requires FCA authorisation evidence
+    sop_ref: POL-GEO-002 v4 (UK addendum)
+    when: "merchant.mcc in ['6012', '6051', '6211'] and kyb.fca_authorised != true"
+    outcome: refer
+    reason_code: UK_FCA_AUTHORISATION_UNVERIFIED
+    reason_text: >-
+      The stated activity is regulated under FSMA and no FCA authorisation could be evidenced on the
+      Financial Services Register.
+    escalate_to: uk_compliance
+
+  - id: UK-HMRC-003
+    description: Money service business without HMRC registration
+    sop_ref: POL-KYB-002 v4 (UK addendum)
+    when: "merchant.mcc == '6051' and kyb.hmrc_msb_registered != true"
+    outcome: decline
+    reason_code: UK_MSB_NOT_REGISTERED
+    reason_text: An unregistered money service business may not be boarded in the UK.
+    stop: true
