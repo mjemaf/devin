@@ -366,10 +366,9 @@ def _evaluate_pack(pack: PolicyPack, facts: dict[str, Any]) -> Evaluation:
                     "sop_ref": rule.sop_ref,
                 }
             )
-            if OUTCOME_SEVERITY["refer"] > best_severity:
-                best_severity, evaluation.outcome = OUTCOME_SEVERITY["refer"], (
-                    "refer" if "refer" in pack.outcomes else "watch"
-                )
+            fallback = "refer" if "refer" in pack.outcomes else "watch"
+            if OUTCOME_SEVERITY[fallback] > best_severity:
+                best_severity, evaluation.outcome = OUTCOME_SEVERITY[fallback], fallback
             continue
         if not fired:
             continue
