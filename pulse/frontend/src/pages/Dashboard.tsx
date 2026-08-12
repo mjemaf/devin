@@ -115,15 +115,17 @@ export function Dashboard() {
           </table>
         </Card>
 
-        <Card title="Peer cohorts" hint="chargeback rate by MCC cohort" wide>
+        <Card title="Peer cohorts" hint="MCC · segment — a merchant is judged against its peers" wide>
           <table>
             <thead>
               <tr>
                 <th>Cohort</th>
                 <th className="numeric">Merchants</th>
-                <th className="numeric">Median</th>
-                <th className="numeric">P90</th>
-                <th>Outliers</th>
+                <th className="numeric">Median risk</th>
+                <th className="numeric">P90 risk</th>
+                <th className="numeric">Median chargebacks</th>
+                <th className="numeric">Worst chargebacks</th>
+                <th>Risk outliers</th>
               </tr>
             </thead>
             <tbody>
@@ -131,8 +133,10 @@ export function Dashboard() {
                 <tr key={cohort.cohort}>
                   <td>{cohort.cohort}</td>
                   <td className="numeric">{cohort.merchants}</td>
-                  <td className="numeric">{percent(cohort.median)}</td>
-                  <td className="numeric">{percent(cohort.p90)}</td>
+                  <td className="numeric">{cohort.median_risk_score.toFixed(1)}</td>
+                  <td className="numeric">{cohort.p90_risk_score.toFixed(1)}</td>
+                  <td className="numeric">{percent(cohort.median_chargeback_rate)}</td>
+                  <td className="numeric">{percent(cohort.max_chargeback_rate)}</td>
                   <td>{cohort.outliers.length ? cohort.outliers.join(", ") : "—"}</td>
                 </tr>
               ))}

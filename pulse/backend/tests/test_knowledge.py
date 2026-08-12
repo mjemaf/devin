@@ -42,6 +42,18 @@ def test_out_of_scope_question_is_refused_and_logged_as_a_gap(session: Session) 
     assert any(gap.id == logged.id for gap in gaps)
 
 
+def test_a_domain_adjacent_question_the_corpus_does_not_answer_is_refused(session: Session) -> None:
+    """The dangerous failure is not the World Cup question, it is the plausible one: crypto custody
+    shares vocabulary with the restricted-business policy without being covered by it."""
+    answer = knowledge.ask(
+        session,
+        "What licensing applies to crypto custody?",
+        asked_by="test@pulse.example",
+    )
+    assert answer.grounded is False
+    assert answer.answer == knowledge.REFUSAL
+
+
 def test_retrieval_only_returns_approved_versions(session: Session) -> None:
     knowledge.ingest_document(
         session,

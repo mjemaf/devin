@@ -263,9 +263,17 @@ def peer_percentile(session: Session, cohort_key: str, value: float) -> float | 
     return round(below / len(peers), 3)
 
 
+@dataclass
+class _CohortMember:
+    name: str
+    risk_score: float
+    chargeback_rate: float
+
+
 def cohort_stats(session: Session) -> list[dict[str, Any]]:
-    """Cohort view for portfolio surveillance: median, p90 and outlier count per MCC/segment."""
-    grouped: dict[str, list[tuple[int, float]]] = {}
+    """Cohort view for portfolio surveillance: a merchant is judged against its peers, not an
+    absolute threshold, so both the risk score and the chargeback rate are reported per cohort."""
+    grouped: dict[str, list[_CohortMember]] = {}
     for merchant in session.execute(select(Merchant)).scalars():
         latest = session.execute(
             select(Score)
@@ -275,22 +283,31 @@ def cohort_stats(session: Session) -> list[dict[str, Any]]:
         if latest is None:
             continue
         grouped.setdefault(f"{merchant.mcc or 'unknown'}:{merchant.segment}", []).append(
-            (merchant.id, latest.value)
+            _CohortMember(
+                name=merchant.display_name,
+                risk_score=latest.value,
+                chargeback_rate=merchant.chargeback_rate or 0.0,
+            )
         )
 
     out: list[dict[str, Any]] = []
-    for cohort, rows in sorted(grouped.items()):
-        values = [value for _, value in rows]
-        median = statistics.median(values)
-        p90 = max(values) if len(values) < 10 else statistics.quantiles(values, n=10)[8]
+    for cohort, members in sorted(grouped.items()):
+        scores = [member.risk_score for member in members]
+        rates = [member.chargeback_rate for member in members]
+        median_score = statistics.median(scores)
+        p90_score = max(scores) if len(scores) < 10 else statistics.quantiles(scores, n=10)[8]
         out.append(
             {
                 "cohort": cohort,
-                "merchants": len(values),
-                "median": round(median, 2),
-                "p90": round(p90, 2),
+                "merchants": len(members),
+                "median_risk_score": round(median_score, 2),
+                "p90_risk_score": round(p90_score, 2),
+                "median_chargeback_rate": round(statistics.median(rates), 5),
+                "max_chargeback_rate": round(max(rates), 5),
                 "outliers": [
-                    merchant_id for merchant_id, value in rows if value >= max(median * 1.5, 55.0)
+                    member.name
+                    for member in members
+                    if member.risk_score >= max(median_score * 1.5, 55.0)
                 ],
             }
         )

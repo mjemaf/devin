@@ -394,11 +394,37 @@ def set_tier(session: Session, arp_key: str, *, tier: str, actor: str, rationale
     return arp
 
 
+def _tier_before_kill_switch(arp: ARP) -> str | None:
+    """The tier the ARP held when the kill switch was last engaged, so releasing it restores the
+    earned tier instead of leaving the process silently demoted for ever."""
+    for entry in reversed(arp.tier_history or []):
+        if entry.get("kill_switch") and entry.get("engaged"):
+            demoted_from = entry.get("from")
+            return demoted_from if isinstance(demoted_from, str) else None
+    return None
+
+
 def set_kill_switch(session: Session, arp_key: str, *, engaged: bool, actor: str, reason: str) -> ARP:
     arp = get_arp(session, arp_key)
+    previous = arp.autonomy_tier
     arp.kill_switch_engaged = engaged
     if engaged:
         arp.autonomy_tier = "shadow"
+    else:
+        arp.autonomy_tier = _tier_before_kill_switch(arp) or arp.autonomy_tier
+    if arp.autonomy_tier != previous:
+        arp.tier_history = [
+            *(arp.tier_history or []),
+            {
+                "from": previous,
+                "to": arp.autonomy_tier,
+                "actor": actor,
+                "rationale": f"kill switch {'engaged' if engaged else 'released'}: {reason}",
+                "at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "kill_switch": True,
+                "engaged": engaged,
+            },
+        ]
     session.flush()
     audit.append(
         session,

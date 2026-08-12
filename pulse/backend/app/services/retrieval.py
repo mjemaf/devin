@@ -48,11 +48,14 @@ class BM25Index:
         total = sum(len(c.tokens) for c in self.chunks)
         self.avg_len = total / len(self.chunks) if self.chunks else 0.0
 
+    def _idf(self, term: str) -> float:
+        df = self.df.get(term, 0)
+        return math.log(1 + (len(self.chunks) - df + 0.5) / (df + 0.5))
+
     def search(self, query: str, top_k: int = 5) -> list[tuple[int, float]]:
         query_terms = tokenize(query)
         if not query_terms or not self.chunks:
             return []
-        n = len(self.chunks)
         scored: list[tuple[int, float]] = []
         for chunk in self.chunks:
             length = len(chunk.tokens) or 1
@@ -61,19 +64,17 @@ class BM25Index:
                 tf = chunk.counts.get(term, 0)
                 if not tf:
                     continue
-                idf = math.log(1 + (n - self.df[term] + 0.5) / (self.df[term] + 0.5))
                 denom = tf + K1 * (1 - B + B * length / (self.avg_len or 1))
-                score += idf * (tf * (K1 + 1)) / denom
+                score += self._idf(term) * (tf * (K1 + 1)) / denom
             if score > 0:
                 scored.append((chunk.chunk_id, score))
         scored.sort(key=lambda pair: -pair[1])
-        # Normalise against the theoretical best so the grounding threshold is corpus-independent.
+        # Normalise against the best a chunk could score if it covered *every* query term,
+        # including terms absent from the corpus. Excluding unseen terms would make a question the
+        # corpus only partially covers ("what licensing applies to crypto custody?") look as well
+        # supported as one it answers outright, which is how a system starts bluffing.
         if scored:
-            ceiling = sum(
-                math.log(1 + (n - self.df[t] + 0.5) / (self.df[t] + 0.5)) * (K1 + 1) / (1 + K1)
-                for t in set(query_terms)
-                if self.df.get(t)
-            )
+            ceiling = sum(self._idf(term) * (K1 + 1) / (1 + K1) for term in set(query_terms))
             if ceiling > 0:
                 scored = [(cid, min(1.0, score / ceiling)) for cid, score in scored]
         return scored[:top_k]

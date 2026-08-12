@@ -22,7 +22,10 @@ class Settings(BaseSettings):
 
     # Retrieval / grounding
     retrieval_top_k: int = 5
-    grounding_threshold: float = 0.18
+    # Share of a question's information content that the best-matching chunk must cover before the
+    # platform is willing to answer. Questions the corpus genuinely covers score 0.5-0.95; ones it
+    # only shares vocabulary with (crypto custody licensing) sit near 0.2, and must be refused.
+    grounding_threshold: float = 0.35
 
     # Entity resolution confidence bands
     resolution_auto_merge: float = 0.92

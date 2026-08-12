@@ -59,8 +59,10 @@ export interface Overview {
   cohorts: {
     cohort: string;
     merchants: number;
-    median: number;
-    p90: number;
+    median_risk_score: number;
+    p90_risk_score: number;
+    median_chargeback_rate: number;
+    max_chargeback_rate: number;
     outliers: string[];
   }[];
   provider_spend: {
@@ -353,16 +355,30 @@ export interface Arp {
   kill_switch_engaged: boolean;
   validated_by: string | null;
   validated_at: string | null;
-  tier_history: { from?: string; to?: string; actor?: string; reason?: string; at?: string }[];
+  tier_history: {
+    from?: string;
+    to?: string;
+    actor?: string;
+    rationale?: string;
+    at?: string;
+    kill_switch?: boolean;
+  }[];
 }
 
 export interface ArpEvaluation {
-  key: string;
+  arp: string;
+  version: number;
   autonomy_tier: string;
   autonomy_ceiling: string;
+  kill_switch_engaged: boolean;
+  reviewed_runs: number;
+  agreement_rate: number;
+  severity_1_misses: number[];
+  p95_latency_ms: number;
+  next_tier: string | null;
   promotion_ready: boolean;
   blockers: string[];
-  metrics: Record<string, unknown>;
+  success_criteria: Record<string, number>;
 }
 
 export interface Answer {

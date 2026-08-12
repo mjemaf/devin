@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 
 import { api } from "../api";
 import type { AgentRun, Arp, ArpEvaluation } from "../api";
-import { Badge, Card, Empty, ErrorBox, KeyValues, Loading, Page, when } from "../components";
+import { Badge, Card, Empty, ErrorBox, KeyValues, Loading, Page, percent, when } from "../components";
 import { useResource } from "../hooks";
 
 const REVIEWER = "analyst@pulse.example";
@@ -20,19 +20,25 @@ export function AgentReview() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const act = async (action: () => Promise<unknown>, message: string) => {
+  const act = async (action: () => Promise<string>) => {
     setBusy(true);
     setNotice(null);
     try {
-      await action();
-      setNotice(message);
+      setNotice(await action());
       runs.reload();
       arps.reload();
+      if (selectedArp) evaluation.reload();
     } catch (cause) {
       setNotice((cause as Error).message);
     } finally {
       setBusy(false);
     }
+  };
+
+  const reviewDisposition = (status: string) => {
+    if (status === "pending_approval") return "awaiting second-line approval";
+    if (status === "approved") return "agent recommendation accepted, run closed";
+    return "analyst overrode the agent recommendation, run closed";
   };
 
   if (runs.loading && !runs.data) return <Loading />;
@@ -79,15 +85,16 @@ export function AgentReview() {
                       className="secondary"
                       disabled={busy}
                       onClick={() =>
-                        act(
-                          () =>
-                            api.post(`/agents/arps/${arp.key}/kill-switch`, {
-                              engaged: !arp.kill_switch_engaged,
-                              actor: "risk.owner@pulse.example",
-                              reason: arp.kill_switch_engaged ? "issue resolved" : "engaged from console",
-                            }),
-                          arp.kill_switch_engaged ? "Kill switch released." : "Kill switch engaged.",
-                        )
+                        act(async () => {
+                          const updated = await api.post<Arp>(`/agents/arps/${arp.key}/kill-switch`, {
+                            engaged: !arp.kill_switch_engaged,
+                            actor: "risk.owner@pulse.example",
+                            reason: arp.kill_switch_engaged ? "issue resolved" : "engaged from console",
+                          });
+                          return `${arp.key}: kill switch ${
+                            updated.kill_switch_engaged ? "engaged" : "released"
+                          }, autonomy tier now ${updated.autonomy_tier.replace(/_/g, " ")}.`;
+                        })
                       }
                     >
                       {arp.kill_switch_engaged ? "Release" : "Kill switch"}
@@ -109,7 +116,12 @@ export function AgentReview() {
                   rows={[
                     ["Current tier", <Badge value={evaluation.data.autonomy_tier} key="tier" />],
                     ["Ceiling", <Badge value={evaluation.data.autonomy_ceiling} key="ceiling" />],
+                    ["Next tier", <Badge value={evaluation.data.next_tier} key="next" />],
                     ["Promotion ready", evaluation.data.promotion_ready ? "yes" : "no"],
+                    ["Reviewed runs", evaluation.data.reviewed_runs],
+                    ["Agreement with humans", percent(evaluation.data.agreement_rate)],
+                    ["Severity-1 misses", evaluation.data.severity_1_misses.length],
+                    ["p95 latency", `${evaluation.data.p95_latency_ms} ms`],
                   ]}
                 />
                 <h3>Blockers</h3>
@@ -124,8 +136,17 @@ export function AgentReview() {
                     ))}
                   </ul>
                 )}
-                <h3>Metrics</h3>
-                <pre>{JSON.stringify(evaluation.data.metrics, null, 2)}</pre>
+                <h3>Success criteria</h3>
+                <table>
+                  <tbody>
+                    {Object.entries(evaluation.data.success_criteria).map(([criterion, value]) => (
+                      <tr key={criterion}>
+                        <td className="small">{criterion.replace(/_/g, " ")}</td>
+                        <td className="numeric">{value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </>
             ) : null}
           </Card>
@@ -175,15 +196,15 @@ export function AgentReview() {
                     <button
                       disabled={busy}
                       onClick={() =>
-                        act(
-                          () =>
-                            api.post(`/agents/runs/${run.id}/review`, {
-                              reviewer: REVIEWER,
-                              outcome: outcome[run.id] ?? "escalate",
-                              note: "Reviewed in console.",
-                            }),
-                          "Review recorded.",
-                        )
+                        act(async () => {
+                          const chosen = outcome[run.id] ?? "escalate";
+                          const updated = await api.post<AgentRun>(`/agents/runs/${run.id}/review`, {
+                            reviewer: REVIEWER,
+                            outcome: chosen,
+                            note: "Reviewed in console.",
+                          });
+                          return `Run #${run.id}: recorded ${chosen.replace(/_/g, " ")} against the agent's ${run.recommendation.replace(/_/g, " ")} — ${reviewDisposition(updated.status)}.`;
+                        })
                       }
                     >
                       Record review
@@ -198,10 +219,12 @@ export function AgentReview() {
                     <button
                       disabled={busy}
                       onClick={() =>
-                        act(
-                          () => api.post(`/agents/runs/${run.id}/approve`, { approver: APPROVER }),
-                          "Second approval recorded.",
-                        )
+                        act(async () => {
+                          const updated = await api.post<AgentRun>(`/agents/runs/${run.id}/approve`, {
+                            approver: APPROVER,
+                          });
+                          return `Run #${run.id}: ${updated.human_outcome} approved by ${updated.second_approver} (reviewed by ${updated.reviewer}).`;
+                        })
                       }
                     >
                       Approve as second line

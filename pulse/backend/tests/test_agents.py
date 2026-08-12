@@ -87,6 +87,19 @@ def test_the_kill_switch_stops_runs_and_drops_the_tier(session: Session) -> None
         )
 
 
+def test_releasing_the_kill_switch_restores_the_tier_the_arp_had_earned(session: Session) -> None:
+    _register(session, "test-restore", autonomy_tier="suggest")
+    agents.set_kill_switch(
+        session, "test-restore", engaged=True, actor="risk.owner@pulse.example", reason="drift"
+    )
+    released = agents.set_kill_switch(
+        session, "test-restore", engaged=False, actor="risk.owner@pulse.example", reason="fixed"
+    )
+    assert released.kill_switch_engaged is False
+    assert released.autonomy_tier == "suggest"
+    assert [entry["to"] for entry in released.tier_history] == ["shadow", "suggest"]
+
+
 def test_materiality_caps_the_effective_tier_below_the_arp_tier(session: Session) -> None:
     _register(session, "test-materiality", autonomy_tier="suggest")
     run_ = agents.run(
