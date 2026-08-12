@@ -1,0 +1,112 @@
+pack: onboarding
+version: "4"
+decision_type: boarding
+jurisdictions: [global]
+effective_from: "2026-01-01"
+owner: financial-crime-policy
+outcomes: [decline, refer, approve_with_conditions, approve]
+rules:
+  - id: R-SANC-001
+    description: Confirmed sanctions match on the entity or any beneficial owner
+    sop_ref: POL-SANC-001 v9
+    when: "screening.sanctions_true_match == true"
+    outcome: decline
+    reason_code: SANCTIONS_MATCH
+    reason_text: A confirmed sanctions match exists on the entity or a beneficial owner.
+    stop: true
+
+  - id: R-KYB-002
+    description: Registry shows the applicant company as dissolved or inactive
+    sop_ref: POL-KYB-002 v4
+    when: "kyb.registry_status not in ['active', None]"
+    outcome: decline
+    reason_code: ENTITY_NOT_ACTIVE
+    reason_text: The company is not active on the official register.
+    stop: true
+
+  - id: R-NET-003
+    description: Strong link to an entity previously off-boarded for cause
+    sop_ref: POL-NET-001 v2
+    when: "network.linked_to_offboarded == true and network.offboarded_path_strength >= 0.5"
+    outcome: refer
+    reason_code: RELATED_TO_OFFBOARDED_ENTITY
+    reason_text: >-
+      The applicant is closely connected to a party previously off-boarded for cause; possible
+      reincarnation of a terminated merchant.
+    escalate_to: financial_crime_investigations
+
+  - id: R-KYB-004
+    description: Beneficial ownership cannot be established to the 25% threshold
+    sop_ref: POL-CIP-001 v7
+    when: "kyb.unresolved_ownership_percentage > 25"
+    outcome: refer
+    reason_code: UBO_NOT_ESTABLISHED
+    reason_text: Beneficial ownership could not be established for more than 25% of the entity.
+
+  - id: R-KYB-005
+    description: Applicant-supplied data disagrees with the register on a key attribute
+    sop_ref: POL-KYB-002 v4
+    when: "kyb.high_severity_mismatches >= 1"
+    outcome: refer
+    reason_code: REGISTRY_DATA_MISMATCH
+    reason_text: Applicant-supplied information conflicts with the official register.
+
+  - id: R-PEP-006
+    description: PEP among the beneficial owners requires enhanced due diligence
+    sop_ref: POL-PEP-003 v5
+    when: "screening.pep_exposure == true"
+    outcome: approve_with_conditions
+    reason_code: PEP_EDD_REQUIRED
+    reason_text: A politically exposed person is connected to the entity; EDD and senior sign-off apply.
+    conditions: [enhanced_due_diligence, source_of_wealth_evidence, annual_review]
+
+  - id: R-AM-007
+    description: Credible adverse media above tolerance
+    sop_ref: POL-AM-004 v3
+    when: "screening.adverse_media_score >= 0.8"
+    outcome: refer
+    reason_code: ADVERSE_MEDIA
+    reason_text: Credible adverse media was found on the entity or its owners.
+
+  - id: R-PROH-008
+    description: Prohibited or restricted business model for the acquiring programme
+    sop_ref: POL-ACC-001 v6
+    when: "merchant.mcc in ['7995', '5967', '4816']"
+    outcome: decline
+    reason_code: PROHIBITED_INDUSTRY
+    reason_text: The stated business falls in a prohibited industry for this programme.
+    stop: true
+
+  - id: R-CR-009
+    description: Thin or weak credit file with material requested exposure
+    sop_ref: POL-CRD-002 v2
+    when: "credit.thin_file == true and merchant.expected_monthly_volume >= 50000"
+    outcome: approve_with_conditions
+    reason_code: THIN_CREDIT_FILE
+    reason_text: No filed financial history supports the requested processing exposure.
+    conditions: [rolling_reserve_10pct, monthly_volume_cap, quarterly_review]
+
+  - id: R-CR-010
+    description: Weak bureau score
+    sop_ref: POL-CRD-002 v2
+    when: "credit.credit_score < 45"
+    outcome: approve_with_conditions
+    reason_code: WEAK_CREDIT_PROFILE
+    reason_text: The bureau credit profile is materially below appetite.
+    conditions: [rolling_reserve_5pct, delayed_settlement]
+
+  - id: R-RES-011
+    description: Entity resolution is ambiguous and needs human confirmation
+    sop_ref: POL-DAT-001 v1
+    when: "resolution.review_required == true"
+    outcome: refer
+    reason_code: IDENTITY_AMBIGUOUS
+    reason_text: The applicant could not be confidently resolved to a single entity.
+
+  - id: R-HR-012
+    description: High-risk jurisdiction exposure
+    sop_ref: POL-GEO-002 v4
+    when: "entity.country in ['IR', 'KP', 'SY', 'RU', 'MM']"
+    outcome: refer
+    reason_code: HIGH_RISK_JURISDICTION
+    reason_text: The entity is registered in a high-risk jurisdiction.

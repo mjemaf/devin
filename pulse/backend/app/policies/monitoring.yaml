@@ -1,0 +1,58 @@
+pack: monitoring
+version: "3"
+decision_type: portfolio_action
+jurisdictions: [global]
+effective_from: "2026-01-01"
+owner: risk-operations
+outcomes: [no_action, watch, restrict, hold_funds, terminate]
+rules:
+  - id: M-SANC-001
+    description: New sanctions match appears on an active merchant after boarding
+    sop_ref: POL-SANC-001 v9
+    when: "screening.sanctions_true_match == true"
+    outcome: hold_funds
+    reason_code: POST_BOARDING_SANCTIONS_MATCH
+    reason_text: A confirmed sanctions match arose after boarding; settlement must be suspended.
+    stop: true
+
+  - id: M-DRIFT-002
+    description: Business model has drifted from what was underwritten
+    sop_ref: POL-MON-003 v2
+    when: "merchant.model_drift == true"
+    outcome: restrict
+    reason_code: BUSINESS_MODEL_DRIFT
+    reason_text: >-
+      The merchant is selling outside the business model underwritten at boarding; limits and
+      pricing were set for a different risk profile.
+
+  - id: M-CB-003
+    description: Chargeback rate above scheme monitoring threshold
+    sop_ref: POL-CB-001 v5
+    when: "merchant.chargeback_rate >= 0.009"
+    outcome: restrict
+    reason_code: EXCESSIVE_CHARGEBACKS
+    reason_text: Chargeback rate is at or above the scheme monitoring programme threshold.
+
+  - id: M-VOL-004
+    description: Volume materially above underwritten expectation
+    sop_ref: POL-CRD-003 v1
+    when: "merchant.volume_ratio >= 3.0"
+    outcome: watch
+    reason_code: VOLUME_SPIKE
+    reason_text: Processing volume is materially above the underwritten expectation.
+
+  - id: M-NET-005
+    description: Newly discovered link to an off-boarded party
+    sop_ref: POL-NET-001 v2
+    when: "network.linked_to_offboarded == true"
+    outcome: watch
+    reason_code: NETWORK_LINK_DISCOVERED
+    reason_text: A link to a previously off-boarded party was discovered post-boarding.
+
+  - id: M-KYC-006
+    description: Periodic review overdue
+    sop_ref: POL-KYC-005 v3
+    when: "merchant.review_overdue_days > 0"
+    outcome: watch
+    reason_code: REVIEW_OVERDUE
+    reason_text: The periodic KYC/KYB refresh is overdue.
