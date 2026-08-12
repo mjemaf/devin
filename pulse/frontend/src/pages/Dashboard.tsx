@@ -131,14 +131,15 @@ export function Dashboard() {
             <tbody>
               {data.cohorts.map((cohort) => (
                 <tr key={cohort.cohort}>
+              {data.cohorts.map((cohort) => (
+                <tr key={cohort.cohort}>
                   <td>{cohort.cohort}</td>
                   <td className="numeric">{cohort.merchants}</td>
-                  <td className="numeric">{cohort.median_risk_score.toFixed(1)}</td>
-                  <td className="numeric">{cohort.p90_risk_score.toFixed(1)}</td>
-                  <td className="numeric">{percent(cohort.median_chargeback_rate)}</td>
-                  <td className="numeric">{percent(cohort.max_chargeback_rate)}</td>
+                  <td className="numeric">{cohort.median.toFixed(1)}</td>
+                  <td className="numeric">{cohort.p90.toFixed(1)}</td>
                   <td>{cohort.outliers.length ? cohort.outliers.join(", ") : "—"}</td>
                 </tr>
+              ))}
               ))}
             </tbody>
           </table>
