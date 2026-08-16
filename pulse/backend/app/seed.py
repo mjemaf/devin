@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import create_all, session_scope
-from app.models import Document, Entity, Merchant, utcnow
+from app.models import Case, Document, Entity, Merchant, utcnow
 from app.services import (
     arp_registry,
     audit,
@@ -32,6 +32,7 @@ from app.services import (
     kyb,
     model_registry,
     monitoring,
+    outcomes,
     provenance,
     resolution,
     transactions,
@@ -427,6 +428,180 @@ def seed_portfolio(session: Session) -> list[dict[str, Any]]:
     return outcomes
 
 
+# The last intake quarter, boarded inside the drift window and written on a different risk profile
+# to the seasoned book: this is what makes population drift observable rather than theoretical.
+RECENT_INTAKE: list[dict[str, Any]] = [
+    {
+        "legal_name": "Vantage Trial Labs Ltd",
+        "display_name": "Vantage Trial Labs",
+        "country": "GB",
+        "registration_number": "14223344",
+        "address": "9 Bower Street, Manchester, M1 4EJ, GB",
+        "mcc": "5122",
+        "business_model": "nutraceutical_free_trial",
+        "segment": "smb",
+        "region": "UK",
+        "declared_volume": 90_000.0,
+        "monthly_volume": 246_000.0,
+        "chargeback_rate": 0.0212,
+        "boarded_days_ago": 8,
+    },
+    {
+        "legal_name": "Solstice Streaming BV",
+        "display_name": "Solstice Streaming",
+        "country": "NL",
+        "registration_number": "NL77120099",
+        "address": "Keizersgracht 210, 1016 DX Amsterdam, NL",
+        "mcc": "5815",
+        "business_model": "digital_subscriptions",
+        "segment": "smb",
+        "region": "EU",
+        "declared_volume": 120_000.0,
+        "monthly_volume": 288_000.0,
+        "chargeback_rate": 0.0186,
+        "boarded_days_ago": 14,
+    },
+    {
+        "legal_name": "Kestrel Ticketing Ltd",
+        "display_name": "Kestrel Ticketing",
+        "country": "GB",
+        "registration_number": "14556677",
+        "address": "44 Broad Quay, Bristol, BS1 4DA, GB",
+        "mcc": "7922",
+        "business_model": "event_ticketing",
+        "segment": "smb",
+        "region": "UK",
+        "declared_volume": 150_000.0,
+        "monthly_volume": 402_000.0,
+        "chargeback_rate": 0.0245,
+        "boarded_days_ago": 19,
+    },
+    {
+        "legal_name": "Cobalt Coaching Ltd",
+        "display_name": "Cobalt Coaching",
+        "country": "GB",
+        "registration_number": "14889900",
+        "address": "12 Rutland Square, Edinburgh, EH1 2AS, GB",
+        "mcc": "8299",
+        "business_model": "coaching_subscriptions",
+        "segment": "smb",
+        "region": "UK",
+        "declared_volume": 60_000.0,
+        "monthly_volume": 171_000.0,
+        "chargeback_rate": 0.0301,
+        "boarded_days_ago": 23,
+    },
+    {
+        "legal_name": "Lumen Devices SAS",
+        "display_name": "Lumen Devices",
+        "country": "FR",
+        "registration_number": "FR90233114",
+        "address": "18 Rue de la Paix, 75002 Paris, FR",
+        "mcc": "5732",
+        "business_model": "hardware_preorder",
+        "segment": "smb",
+        "region": "EU",
+        "declared_volume": 110_000.0,
+        "monthly_volume": 287_000.0,
+        "chargeback_rate": 0.0194,
+        "boarded_days_ago": 27,
+    },
+]
+
+
+def seed_recent_intake(session: Session) -> list[int]:
+    """Board the last intake quarter so the drift window has a population to compare.
+
+    Written straight to the book rather than through the decision path: the point of this cohort is
+    the feature distribution it produces, not another set of boarding decisions.
+    """
+    entity_ids: list[int] = []
+    for spec in RECENT_INTAKE:
+        resolved = resolution.resolve(
+            session,
+            source_system="boarding",
+            source_ref=spec["registration_number"],
+            payload={
+                "legal_name": spec["legal_name"],
+                "country": spec["country"],
+                "registration_number": spec["registration_number"],
+                "address": spec["address"],
+                "entity_type": "company",
+            },
+            actor="seed.underwriter",
+        )
+        kyb.verify(session, resolved.entity_id, actor="seed.underwriter")
+        boarded_at = utcnow() - dt.timedelta(days=spec["boarded_days_ago"])
+        merchant = Merchant(
+            entity_id=resolved.entity_id,
+            display_name=spec["display_name"],
+            segment=spec["segment"],
+            region=spec["region"],
+            mcc=spec["mcc"],
+            underwritten_mcc=spec["mcc"],
+            business_model=spec["business_model"],
+            underwritten_business_model=spec["business_model"],
+            lifecycle_state="active",
+            monthly_volume=spec["monthly_volume"],
+            declared_volume=spec["declared_volume"],
+            chargeback_rate=spec["chargeback_rate"],
+            credit_limit=spec["declared_volume"],
+            boarded_at=boarded_at,
+            last_reviewed_at=boarded_at,
+            review_cadence_days=365,
+        )
+        session.add(merchant)
+        session.flush()
+        merchant.platform_mid = f"MID{merchant.id:06d}"
+        session.flush()
+        entity_ids.append(resolved.entity_id)
+    return entity_ids
+
+
+# Labelled agent recommendations against the human disposition, for two ARPs with different
+# records: one holds its agreement, one has fallen through the floor and a sweep must demote it.
+AGREEMENT_FIXTURE: list[dict[str, Any]] = [
+    {
+        "arp_key": "monitoring-triage",
+        "observations": 24,
+        "disagreements": 7,
+        "predicted": "watch",
+        "observed": "escalate",
+        "note": "Free-trial cohort disputes triaged as watch; analysts escalated.",
+    },
+    {
+        "arp_key": "boarding-triage",
+        "observations": 22,
+        "disagreements": 1,
+        "predicted": "refer",
+        "observed": "decline",
+        "note": "Referral triage still tracking analyst dispositions.",
+    },
+]
+
+
+def seed_labelled_outcomes(session: Session) -> dict[str, int]:
+    """Label historical dispositions so agreement — and its floor — can be evaluated."""
+    case_ids = session.execute(select(Case.id).order_by(Case.id)).scalars().all()
+    counts: dict[str, int] = {}
+    for fixture in AGREEMENT_FIXTURE:
+        for index in range(int(fixture["observations"])):
+            disagrees = index < int(fixture["disagreements"])
+            outcomes.label(
+                session,
+                subject_type="case",
+                subject_id=case_ids[index % len(case_ids)] if case_ids else index + 1,
+                label="confirmed" if disagrees else "explained",
+                predicted=str(fixture["predicted"]),
+                observed=str(fixture["observed"] if disagrees else fixture["predicted"]),
+                arp_key=str(fixture["arp_key"]),
+                note=str(fixture["note"]),
+                labelled_by="seed.analyst",
+            )
+        counts[str(fixture["arp_key"])] = int(fixture["observations"])
+    return counts
+
+
 def seed_drift_signals(session: Session) -> None:
     """Post-boarding reality: two merchants drift from what was underwritten."""
     def merchant_by_name(name: str) -> Merchant | None:
@@ -551,7 +726,9 @@ def run(*, reset: bool = False) -> dict[str, Any]:
         monitors = [monitor.key for monitor in monitoring.install(session)]
         offboarded_entity_id = seed_offboarded_history(session)
         portfolio = seed_portfolio(session)
+        recent_intake = seed_recent_intake(session)
         seed_drift_signals(session)
+        labelled_outcomes = seed_labelled_outcomes(session)
         stream = seed_transaction_stream(session)
         experiment = seed_experiment(session)
         halcyon = decisioning.board(session, HALCYON_APPLICATION, actor="seed.underwriter")
@@ -567,6 +744,8 @@ def run(*, reset: bool = False) -> dict[str, Any]:
             "monitors": monitors,
             "offboarded_entity_id": offboarded_entity_id,
             "portfolio": portfolio,
+            "recent_intake": recent_intake,
+            "labelled_outcomes": labelled_outcomes,
             "live_application": {
                 "application_id": HALCYON_APPLICATION["application_id"],
                 "entity_id": halcyon["entity_id"],
@@ -586,7 +765,7 @@ def run(*, reset: bool = False) -> dict[str, Any]:
             payload={
                 "documents": documents,
                 "arps": arps,
-                "merchants": len(portfolio) + 2,
+                "merchants": len(portfolio) + len(recent_intake) + 2,
             },
         )
         return summary

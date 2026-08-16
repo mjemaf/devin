@@ -241,8 +241,9 @@ def test_transaction_ingest_normalises_and_reports_exposure(
     health = client.get("/api/transactions/health").json()
     assert health["events"] >= 1
 
-    exposure = client.get(f"/api/merchants/{merchant.id}/exposure").json()
+    exposure = client.get(f"/api/merchants/{merchant.entity_id}/exposure").json()
     assert exposure["window_days"] >= 1
+    assert client.get("/api/merchants/999999/exposure").status_code == 404
 
 
 def test_ai_gateway_surfaces_report_spend_and_assemble_context(client: TestClient) -> None:
