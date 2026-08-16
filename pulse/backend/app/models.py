@@ -105,6 +105,10 @@ class Merchant(Base):
     underwritten_business_model: Mapped[str | None] = mapped_column(String(64), default=None)
     lifecycle_state: Mapped[str] = mapped_column(String(24), default="intake")
     monthly_volume: Mapped[float] = mapped_column(Float, default=0.0)
+    # Volume stated at application: the denominator for declared-versus-observed drift.
+    declared_volume: Mapped[float] = mapped_column(Float, default=0.0)
+    # Acquiring/gateway identifier the transaction streams arrive under (PLS-16 resolution key).
+    platform_mid: Mapped[str | None] = mapped_column(String(48), default=None, index=True)
     chargeback_rate: Mapped[float] = mapped_column(Float, default=0.0)
     reserve_held: Mapped[float] = mapped_column(Float, default=0.0)
     credit_limit: Mapped[float] = mapped_column(Float, default=0.0)
@@ -141,7 +145,13 @@ class SourceRecord(Base):
 
 
 class Fact(Base):
-    """A provenanced attribute about a subject. Conflicts coexist; the winner is explainable."""
+    """A provenanced, bi-temporal attribute about a subject.
+
+    ``valid_from``/``valid_to`` carry world time (when the assertion was true of the world) and
+    ``recorded_at``/``superseded_at`` carry system time (when Pulse came to believe it). Conflicts
+    coexist: ``conflict_set`` names the competing fact ids and ``resolution_rule`` the rule that
+    picked the effective value, so a citation can always say why one source won.
+    """
 
     __tablename__ = "facts"
 
@@ -154,6 +164,16 @@ class Fact(Base):
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     as_of: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
     superseded_by_id: Mapped[int | None] = mapped_column(ForeignKey("facts.id"), default=None)
+    valid_from: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    valid_to: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    recorded_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    superseded_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    extraction_method: Mapped[str] = mapped_column(String(32), default="api")
+    source_ref: Mapped[str | None] = mapped_column(String(128), default=None)
+    content_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    classification: Mapped[str] = mapped_column(String(24), default="internal")
+    conflict_set: Mapped[list[int]] = mapped_column(JSON, default=list)
+    resolution_rule: Mapped[str | None] = mapped_column(String(64), default=None)
 
 
 class OwnershipEdge(Base):
@@ -169,6 +189,12 @@ class OwnershipEdge(Base):
     source: Mapped[str] = mapped_column(String(64), default="registry")
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     as_of: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    # Asserted → Corroborated → Disputed → Superseded, per the canonical OwnershipEdge lifecycle.
+    state: Mapped[str] = mapped_column(String(16), default="asserted")
+    basis: Mapped[str | None] = mapped_column(String(64), default=None)
+    valid_from: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    valid_to: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    conflict_set: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
 
 
 class Relationship(Base):
@@ -348,6 +374,16 @@ class Decision(Base):
     actor: Mapped[str] = mapped_column(String(96), default="system")
     agent_run_id: Mapped[int | None] = mapped_column(ForeignKey("agent_runs.id"), default=None)
     as_of: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    # Immutable on write. The fields below make the decision replayable and attributable: the exact
+    # fact set relied on, the models consulted, the jurisdiction and the accountable human.
+    jurisdiction: Mapped[str] = mapped_column(String(16), default="global")
+    facts_relied: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    fact_provenance: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    model_versions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    accountable_party: Mapped[str | None] = mapped_column(String(96), default=None)
+    accountable_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    degraded_checks: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
 # --------------------------------------------------------------------------------------
@@ -403,9 +439,39 @@ class Case(Base):
     assignee: Mapped[str | None] = mapped_column(String(96), default=None)
     created_by: Mapped[str] = mapped_column(String(96), default="system")
     sla_due_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    # Mandatory at close (PLS-52): confirmed | false_positive | explained.
+    disposition: Mapped[str | None] = mapped_column(String(24), default=None)
     resolution: Mapped[str | None] = mapped_column(String(255), default=None)
     closed_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class Requirement(Base):
+    """An outstanding information or document requirement (PLS-54).
+
+    A requirement carries a due date and a *declared consequence*, so an unmet ask has a defined
+    effect (boarding blocked, credit frozen, restriction) rather than ageing quietly in an inbox.
+    """
+
+    __tablename__ = "requirements"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("entities.id"), index=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("cases.id"), default=None, index=True)
+    requirement_type: Mapped[str] = mapped_column(String(64), index=True)
+    accepted_evidence: Mapped[list[str]] = mapped_column(JSON, default=list)
+    state: Mapped[str] = mapped_column(String(16), default="outstanding")
+    consequence: Mapped[str] = mapped_column(String(32), default="restriction")
+    requested_by: Mapped[str] = mapped_column(String(96), default="system")
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    due_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    satisfied_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    satisfied_by: Mapped[str | None] = mapped_column(String(96), default=None)
+    escalated_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    evidence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("evidence_documents.id"), default=None
+    )
 
 
 class CaseEvent(Base):
@@ -437,6 +503,13 @@ class ARP(Base):
     data_contract: Mapped[list[str]] = mapped_column(JSON, default=list)
     success_criteria: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     permitted_recommendations: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Which platform capabilities the pathway may invoke; everything else is denied.
+    tool_scope: Mapped[list[str]] = mapped_column(JSON, default=list)
+    prompt_version: Mapped[str] = mapped_column(String(32), default="v1")
+    model_binding: Mapped[str | None] = mapped_column(String(64), default=None)
+    escalation_confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    owner: Mapped[str | None] = mapped_column(String(96), default=None)
+    status: Mapped[str] = mapped_column(String(16), default="draft")
     autonomy_tier: Mapped[str] = mapped_column(String(16), default="shadow")
     autonomy_ceiling: Mapped[str] = mapped_column(String(16), default="four_eyes")
     kill_switch_engaged: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -487,6 +560,227 @@ class ProviderCall(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     requested_by: Mapped[str] = mapped_column(String(96), default="system")
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class PlatformEvent(Base):
+    """A durable canonical event on the fabric (PLS-13).
+
+    Publishing is the contract between components: nothing calls a peer synchronously to tell it
+    something happened. Topics are versioned (``{env}.risk.{domain}.{entity}.{version}``) and every
+    record keeps both occurrence and record time so a consumer can be replayed from any point.
+    """
+
+    __tablename__ = "platform_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    topic: Mapped[str] = mapped_column(String(96), index=True)
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    producer: Mapped[str] = mapped_column(String(64), default="pulse")
+    subject_type: Mapped[str] = mapped_column(String(32), default="entity")
+    subject_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    occurred_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    recorded_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    handlers_invoked: Mapped[int] = mapped_column(Integer, default=0)
+    retention_days: Mapped[int] = mapped_column(Integer, default=2557)  # 7 years
+
+
+class SourceFeed(Base):
+    """A registered inbound source with an owner, a freshness SLA and observed state (PLS-10/14).
+
+    A feed that misses its SLA marks derived facts stale; consumers surface staleness rather than
+    silently serving old data.
+    """
+
+    __tablename__ = "source_feeds"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(48), unique=True)
+    description: Mapped[str] = mapped_column(String(255), default="")
+    owner: Mapped[str] = mapped_column(String(96), default="platform")
+    extraction_method: Mapped[str] = mapped_column(String(32), default="api")
+    freshness_sla_minutes: Mapped[int] = mapped_column(Integer, default=1440)
+    criticality_tier: Mapped[int] = mapped_column(Integer, default=2)
+    residency: Mapped[str] = mapped_column(String(16), default="global")
+    contains_pii: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_success_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    last_failure_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    last_failure_reason: Mapped[str | None] = mapped_column(String(255), default=None)
+
+
+class ModelArtefact(Base):
+    """An SR 11-7 registry entry for a model, rule set, prompt or agent (PLS-71).
+
+    Nothing runs through the AI gateway or the ARP executor without a registry entry in
+    ``validated`` state — the control is code, not process.
+    """
+
+    __tablename__ = "model_artefacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), index=True)
+    version: Mapped[str] = mapped_column(String(16), default="1")
+    artefact_type: Mapped[str] = mapped_column(String(24), default="model")
+    purpose: Mapped[str] = mapped_column(String(255), default="")
+    owner: Mapped[str] = mapped_column(String(96), default="model.risk@pulse.example")
+    approved_use: Mapped[list[str]] = mapped_column(JSON, default=list)
+    limitations: Mapped[list[str]] = mapped_column(JSON, default=list)
+    training_data_ref: Mapped[str | None] = mapped_column(String(255), default=None)
+    feature_set: Mapped[list[str]] = mapped_column(JSON, default=list)
+    bias_exposure: Mapped[str | None] = mapped_column(String(255), default=None)
+    fair_lending_relevant: Mapped[bool] = mapped_column(Boolean, default=False)
+    validation_evidence: Mapped[str | None] = mapped_column(Text, default=None)
+    validated_by: Mapped[str | None] = mapped_column(String(96), default=None)
+    validated_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    monitoring_plan: Mapped[str | None] = mapped_column(Text, default=None)
+    revalidation_due: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    residency: Mapped[str] = mapped_column(String(16), default="global")
+    barred_classifications: Mapped[list[str]] = mapped_column(JSON, default=list)
+    state: Mapped[str] = mapped_column(String(16), default="draft")
+    change_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+    __table_args__ = (UniqueConstraint("key", "version", name="uq_artefact_version"),)
+
+
+class ModelInvocation(Base):
+    """Every model call that left through the AI gateway (PLS-80), priced and attributed."""
+
+    __tablename__ = "model_invocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    artefact_key: Mapped[str] = mapped_column(String(64), index=True)
+    artefact_version: Mapped[str] = mapped_column(String(16), default="1")
+    purpose: Mapped[str] = mapped_column(String(64))
+    caller: Mapped[str] = mapped_column(String(96), default="system")
+    arp_key: Mapped[str | None] = mapped_column(String(64), default=None)
+    use_case: Mapped[str] = mapped_column(String(48), default="unassigned")
+    prompt_version: Mapped[str] = mapped_column(String(32), default="v1")
+    entity_id: Mapped[int | None] = mapped_column(ForeignKey("entities.id"), default=None)
+    context_manifest_hash: Mapped[str | None] = mapped_column(String(64), default=None)
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0)
+    cost: Mapped[float] = mapped_column(Float, default=0.0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    outcome: Mapped[str] = mapped_column(String(24), default="ok")
+    detail: Mapped[str | None] = mapped_column(String(255), default=None)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class ApprovalRequest(Base):
+    """Four-eyes as a platform primitive (PLS-72), not a per-use-case implementation."""
+
+    __tablename__ = "approval_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject_type: Mapped[str] = mapped_column(String(32))
+    subject_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    decision_class: Mapped[str] = mapped_column(String(48))
+    action: Mapped[str] = mapped_column(String(48))
+    severity: Mapped[str] = mapped_column(String(16), default="medium")
+    proposer: Mapped[str] = mapped_column(String(96))
+    proposer_role: Mapped[str] = mapped_column(String(32), default="analyst")
+    required_role: Mapped[str] = mapped_column(String(32), default="approver")
+    state: Mapped[str] = mapped_column(String(16), default="pending")
+    approver: Mapped[str | None] = mapped_column(String(96), default=None)
+    rationale: Mapped[str | None] = mapped_column(Text, default=None)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    decided_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+
+
+class BrokeredAction(Base):
+    """The single record of every consequential action taken on the outside world (PLS-53)."""
+
+    __tablename__ = "brokered_actions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    action_type: Mapped[str] = mapped_column(String(48), index=True)
+    entity_id: Mapped[int | None] = mapped_column(ForeignKey("entities.id"), default=None, index=True)
+    case_id: Mapped[int | None] = mapped_column(ForeignKey("cases.id"), default=None)
+    actor: Mapped[str] = mapped_column(String(96))
+    actor_type: Mapped[str] = mapped_column(String(16), default="human")  # human | agent
+    authority_basis: Mapped[str] = mapped_column(String(96))
+    rule_ref: Mapped[str | None] = mapped_column(String(64), default=None)
+    rule_version: Mapped[str | None] = mapped_column(String(16), default=None)
+    approval_request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("approval_requests.id"), default=None
+    )
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    state: Mapped[str] = mapped_column(String(16), default="executed")
+    rollback_token: Mapped[str | None] = mapped_column(String(36), default=None)
+    reversible: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    rolled_back_by: Mapped[str | None] = mapped_column(String(96), default=None)
+    rolled_back_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
+    prior_state: Mapped[str | None] = mapped_column(String(24), default=None)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class OutcomeLabel(Base):
+    """A labelled outcome closing the loop back to evaluation and knowledge curation (PLS-52)."""
+
+    __tablename__ = "outcome_labels"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subject_type: Mapped[str] = mapped_column(String(32), index=True)
+    subject_id: Mapped[int] = mapped_column(Integer, index=True)
+    entity_id: Mapped[int | None] = mapped_column(ForeignKey("entities.id"), default=None, index=True)
+    label: Mapped[str] = mapped_column(String(24))  # confirmed | false_positive | explained
+    exit_classification: Mapped[str | None] = mapped_column(String(16), default=None)
+    predicted: Mapped[str | None] = mapped_column(String(48), default=None)
+    observed: Mapped[str | None] = mapped_column(String(48), default=None)
+    arp_key: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    note: Mapped[str | None] = mapped_column(Text, default=None)
+    labelled_by: Mapped[str] = mapped_column(String(96), default="system")
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class TransactionEvent(Base):
+    """A transaction normalised to the canonical model before detection sees it (PLS-16)."""
+
+    __tablename__ = "transaction_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dedupe_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    merchant_id: Mapped[int] = mapped_column(ForeignKey("merchants.id"), index=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("entities.id"), index=True)
+    source_platform: Mapped[str] = mapped_column(String(48), default="acquiring")
+    event_type: Mapped[str] = mapped_column(String(32), default="authorisation")
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    currency: Mapped[str] = mapped_column(String(3), default="EUR")
+    amount_base: Mapped[float] = mapped_column(Float, default=0.0)
+    channel: Mapped[str | None] = mapped_column(String(24), default=None)
+    country: Mapped[str | None] = mapped_column(String(2), default=None)
+    mcc: Mapped[str | None] = mapped_column(String(8), default=None)
+    occurred_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    normalised_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    normalisation_ms: Mapped[int] = mapped_column(Integer, default=0)
+    raw: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class Experiment(Base):
+    """A registered champion/challenger, shadow or holdout experiment (PLS-85)."""
+
+    __tablename__ = "experiments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True)
+    hypothesis: Mapped[str] = mapped_column(Text)
+    scope: Mapped[str] = mapped_column(String(255), default="portfolio")
+    mode: Mapped[str] = mapped_column(String(24), default="shadow")
+    control: Mapped[str] = mapped_column(String(96), default="incumbent")
+    variant: Mapped[str] = mapped_column(String(96), default="challenger")
+    metric: Mapped[str] = mapped_column(String(96), default="agreement_rate")
+    guardrail_metric: Mapped[str] = mapped_column(String(96), default="false_positive_rate")
+    min_observations: Mapped[int] = mapped_column(Integer, default=50)
+    observations: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    owner: Mapped[str] = mapped_column(String(96), default="risk.owner@pulse.example")
+    state: Mapped[str] = mapped_column(String(16), default="shadow")
+    result: Mapped[str | None] = mapped_column(Text, default=None)
+    adopted: Mapped[bool | None] = mapped_column(Boolean, default=None)
+    started_at: Mapped[dt.datetime] = mapped_column(UTCDateTime, default=utcnow)
+    concluded_at: Mapped[dt.datetime | None] = mapped_column(UTCDateTime, default=None)
 
 
 class AuditEvent(Base):

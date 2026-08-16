@@ -15,24 +15,35 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
+    ActionRollbackIn,
+    AdverseActionIn,
     AgentApproveIn,
     AgentReviewIn,
     ApplicationIn,
+    ApprovalDecisionIn,
+    ApprovalRequestIn,
     ApproveDocumentIn,
+    BrokeredActionIn,
     CaseAssignIn,
     CaseCloseIn,
     CaseNoteIn,
+    ContextRequestIn,
     DocumentIn,
     FeedbackIn,
     HitReviewIn,
     KillSwitchIn,
     ListUpdateIn,
     OffboardIn,
+    OutcomeLabelIn,
     PolicyEvalIn,
     QuestionIn,
     RegistryChangeIn,
+    ReplayIn,
+    RequirementIn,
+    RequirementSatisfyIn,
     ScreenIn,
     TierIn,
+    TransactionBatchIn,
     TransactionSignalIn,
 )
 from app.db import get_session
@@ -52,28 +63,58 @@ from app.models import (
 )
 from app.providers import gateway
 from app.services import (
+    action_broker,
     agents,
+    ai_gateway,
     audit,
     cases,
+    components,
+    context_assembly,
     decisioning,
+    entitlements,
+    evaluation,
     events,
+    explainability,
+    features,
+    four_eyes,
     graph,
     knowledge,
     materiality,
     merchant360,
+    model_registry,
     monitoring,
+    outcomes,
     policy,
+    provenance,
+    requirements,
     scoring,
     screening,
+    transactions,
 )
 
 router = APIRouter()
 
 
+# A refused action is a working control, not a fault: governance refusals are 409, entitlement
+# refusals 403, unknown subjects 404, malformed input 400.
+REFUSALS = (
+    agents.GovernanceError,
+    four_eyes.ApprovalError,
+    action_broker.BrokerError,
+    requirements.RequirementError,
+    explainability.ExplainError,
+    evaluation.EvaluationError,
+    ai_gateway.GatewayError,
+    model_registry.RegistryError,
+)
+
+
 def _handled(exc: Exception) -> HTTPException:
     if isinstance(exc, LookupError):
         return HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, agents.GovernanceError):
+    if isinstance(exc, entitlements.EntitlementError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, REFUSALS):
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, (ValueError, policy.PolicyError)):
         return HTTPException(status_code=400, detail=str(exc))
@@ -814,3 +855,460 @@ def policy_as_of(
     """Replay a policy question as at a past date — 'what did the rule say in February?'."""
     answer = knowledge.ask(session, question, as_of=as_of, asked_by="audit.replay")
     return answer.as_dict()
+
+
+# ------------------------------------------------------------------------------------------
+# Architecture register (PLS-90): the component estate, its state and its traceability
+# ------------------------------------------------------------------------------------------
+
+
+@router.get("/platform/architecture", tags=["architecture"])
+def architecture() -> dict[str, Any]:
+    """Principles, commitments and the implementation state of the component register.
+
+    Component state is honest about itself: `implemented` means the behaviour runs here,
+    `reference` means the interface exists over a local substitute, `planned` means it does not
+    exist yet. A reference implementation that claims otherwise is worse than useless.
+    """
+    return {
+        "summary": components.summary(),
+        "principles": components.PRINCIPLES,
+        "commitments": components.COMMITMENTS,
+        "nfr_targets": components.NFR_TARGETS,
+    }
+
+
+@router.get("/platform/components", tags=["architecture"])
+def component_register(
+    layer: str | None = None, state: str | None = None
+) -> list[dict[str, Any]]:
+    rows = components.register()
+    if layer:
+        rows = [row for row in rows if row["layer"] == layer]
+    if state:
+        rows = [row for row in rows if row["state"] == state]
+    return rows
+
+
+@router.get("/platform/traceability", tags=["architecture"])
+def traceability() -> dict[str, Any]:
+    """Use case -> components -> events -> decisions, so no capability is orphaned."""
+    return components.traceability()
+
+
+@router.get("/platform/roadmap", tags=["architecture"])
+def roadmap() -> list[dict[str, Any]]:
+    return components.roadmap()
+
+
+@router.get("/platform/adrs", tags=["architecture"])
+def adrs() -> list[dict[str, Any]]:
+    return [adr.as_dict() for adr in components.ADRS]
+
+
+@router.get("/platform/use-cases", tags=["architecture"])
+def use_cases() -> list[dict[str, Any]]:
+    return [use_case.as_dict() for use_case in components.USE_CASES]
+
+
+# ------------------------------------------------------------------------------------------
+# Event fabric (PLS-13)
+# ------------------------------------------------------------------------------------------
+
+
+@router.get("/platform/events/topics", tags=["events"])
+def event_topics() -> list[dict[str, Any]]:
+    return events.topic_register()
+
+
+@router.get("/platform/events", tags=["events"])
+def event_log(
+    topic: str | None = None, limit: int = 100, session: Session = Depends(get_session)
+) -> list[dict[str, Any]]:
+    return events.log(session, topic=topic, limit=limit)
+
+
+@router.post("/platform/events/replay", tags=["events"])
+def replay_events(body: ReplayIn, session: Session = Depends(get_session)) -> dict[str, Any]:
+    """Re-deliver persisted events. Handlers are idempotent, so a replay changes nothing twice."""
+    return events.replay(
+        session,
+        topics=body.topics or None,
+        since=body.since,
+        dry_run=body.dry_run,
+    )
+
+
+# ------------------------------------------------------------------------------------------
+# Provenance & freshness (PLS-14)
+# ------------------------------------------------------------------------------------------
+
+
+@router.get("/platform/sources", tags=["provenance"])
+def source_health(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
+    return provenance.source_health(session)
+
+
+@router.get("/merchants/{entity_id}/provenance", tags=["provenance"])
+def entity_provenance(entity_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    if session.get(Entity, entity_id) is None:
+        raise HTTPException(status_code=404, detail=f"unknown entity {entity_id}")
+    reconciled = provenance.effective(session, entity_id)
+    return {
+        "entity_id": entity_id,
+        "facts": {key: fact.as_dict() for key, fact in sorted(reconciled.items())},
+        "staleness": provenance.staleness_report(session, entity_id),
+    }
+
+
+# ------------------------------------------------------------------------------------------
+# Features & transactions (PLS-15, PLS-16)
+# ------------------------------------------------------------------------------------------
+
+
+@router.get("/platform/features", tags=["features"])
+def feature_registry() -> list[dict[str, Any]]:
+    return features.registry()
+
+
+@router.get("/merchants/{entity_id}/features", tags=["features"])
+def merchant_features(entity_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    merchant = session.execute(
+        select(Merchant).where(Merchant.entity_id == entity_id)
+    ).scalars().first()
+    if merchant is None:
+        raise HTTPException(status_code=404, detail=f"no merchant for entity {entity_id}")
+    return features.compute(session, merchant)
+
+
+@router.post("/transactions/ingest", tags=["transactions"])
+def ingest_transactions(
+    body: TransactionBatchIn, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    try:
+        return transactions.ingest(
+            session,
+            batch=[dict(item) for item in body.events],
+            source_platform=body.source_platform,
+        )
+    except Exception as exc:
+        raise _handled(exc) from exc
+
+
+@router.get("/transactions/health", tags=["transactions"])
+def transaction_health(session: Session = Depends(get_session)) -> dict[str, Any]:
+    return transactions.stream_health(session)
+
+
+@router.get("/merchants/{merchant_id}/exposure", tags=["transactions"])
+def merchant_exposure(
+    merchant_id: int, window_days: int = 30, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    if session.get(Merchant, merchant_id) is None:
+        raise HTTPException(status_code=404, detail=f"unknown merchant {merchant_id}")
+    return transactions.exposure(session, merchant_id, window_days=window_days)
+
+
+# ------------------------------------------------------------------------------------------
+# Governance spine: entitlements, model risk, four-eyes, brokered action
+# ------------------------------------------------------------------------------------------
+
+
+@router.get("/governance/entitlements", tags=["governance"])
+def entitlement_matrix() -> dict[str, Any]:
+    return entitlements.matrix()
+
+
+@router.get("/governance/model-registry", tags=["governance"])
+def model_inventory(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
+    return model_registry.inventory(session)
+
+
+@router.get("/governance/approvals", tags=["governance"])
+def pending_approvals(
+    decision_class: str | None = None, session: Session = Depends(get_session)
+) -> list[dict[str, Any]]:
+    return four_eyes.pending(session, decision_class=decision_class)
+
+
+@router.post("/governance/approvals", tags=["governance"])
+def request_approval(
+    body: ApprovalRequestIn, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    try:
+        row = four_eyes.request(
+            session,
+            subject_type=body.subject_type,
+            subject_id=body.subject_id,
+            decision_class=body.decision_class,
+            action=body.action,
+            proposer=body.proposer,
+            proposer_role=body.proposer_role,
+            severity=body.severity,
+            required_role=body.required_role,
+            payload={str(key): value for key, value in body.payload.items()},
+        )
+    except Exception as exc:
+        raise _handled(exc) from exc
+    return four_eyes.serialise(row)
+
+
+@router.post("/governance/approvals/{request_id}/decide", tags=["governance"])
+def decide_approval(
+    request_id: int, body: ApprovalDecisionIn, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    try:
+        row = four_eyes.decide(
+            session,
+            request_id,
+            approver=body.approver,
+            approver_role=body.approver_role,
+            approve=body.approve,
+            rationale=body.rationale,
+        )
+    except Exception as exc:
+        raise _handled(exc) from exc
+    return four_eyes.serialise(row)
+
+
+@router.get("/governance/actions", tags=["governance"])
+def action_ledger(limit: int = 100, session: Session = Depends(get_session)) -> dict[str, Any]:
+    return {
+        "catalogue": action_broker.catalogue(),
+        "ledger": action_broker.ledger(session, limit=limit),
+        "reconciliation": action_broker.reconcile(session),
+    }
+
+
+@router.post("/governance/actions", tags=["governance"])
+def execute_action(
+    body: BrokeredActionIn, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    """Every consequential action leaves through here — including an agent's."""
+    try:
+        row = action_broker.execute(
+            session,
+            action_type=body.action_type,
+            entity_id=body.entity_id,
+            actor=body.actor,
+            actor_role=body.actor_role,
+            actor_type=body.actor_type,
+            authority_basis=body.authority_basis,
+            rule_ref=body.rule_ref,
+            rule_version=body.rule_version,
+            case_id=body.case_id,
+            evidence={str(key): value for key, value in body.evidence.items()},
+            approval_request_id=body.approval_request_id,
+        )
+    except Exception as exc:
+        raise _handled(exc) from exc
+    return action_broker.serialise(row)
+
+
+@router.post("/governance/actions/{rollback_token}/rollback", tags=["governance"])
+def rollback_action(
+    rollback_token: str, body: ActionRollbackIn, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    try:
+        row = action_broker.rollback(
+            session, rollback_token=rollback_token, actor=body.actor, reason=body.reason
+        )
+    except Exception as exc:
+        raise _handled(exc) from exc
+    return action_broker.serialise(row)
+
+
+# ------------------------------------------------------------------------------------------
+# Requirements (PLS-54)
+# ------------------------------------------------------------------------------------------
+
+
+@router.get("/requirements", tags=["requirements"])
+def list_requirements(
+    entity_id: int | None = None, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    return {
+        "catalogue": sorted(requirements.CATALOGUE),
+        "outstanding": requirements.outstanding(session, entity_id=entity_id),
+        "ageing": requirements.ageing(session),
+    }
+
+
+@router.post("/requirements", tags=["requirements"])
+def create_requirement(
+    body: RequirementIn, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    try:
+        row = requirements.raise_requirement(
+            session,
+            entity_id=body.entity_id,
+            requirement_type=body.requirement_type,
+            requested_by=body.requested_by,
+            case_id=body.case_id,
+            due_days=body.due_days,
+            rationale=body.rationale,
+        )
+    except Exception as exc:
+        raise _handled(exc) from exc
+    return requirements.serialise(row)
+
+
+@router.post("/requirements/{requirement_id}/satisfy", tags=["requirements"])
+def satisfy_requirement(
+    requirement_id: int, body: RequirementSatisfyIn, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    try:
+        row = requirements.satisfy(
+            session, requirement_id, evidence_id=body.evidence_id, actor=body.actor
+        )
+    except Exception as exc:
+        raise _handled(exc) from exc
+    return requirements.serialise(row)
+
+
+@router.post("/requirements/escalate", tags=["requirements"])
+def escalate_requirements(session: Session = Depends(get_session)) -> dict[str, Any]:
+    return {"escalated": requirements.escalate_overdue(session)}
+
+
+# ------------------------------------------------------------------------------------------
+# Explanation, adverse action and decision replay (PLS-74)
+# ------------------------------------------------------------------------------------------
+
+
+@router.get("/decisions/{decision_id}/explain", tags=["decisions"])
+def explain_decision(decision_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    try:
+        return explainability.explain(session, decision_id)
+    except Exception as exc:
+        raise _handled(exc) from exc
+
+
+@router.get("/decisions/{decision_id}/replay", tags=["decisions"])
+def replay_decision(decision_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    try:
+        return explainability.replay(session, decision_id)
+    except Exception as exc:
+        raise _handled(exc) from exc
+
+
+@router.post("/decisions/{decision_id}/adverse-action", tags=["decisions"])
+def issue_adverse_action(
+    decision_id: int, body: AdverseActionIn, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    try:
+        return explainability.adverse_action(session, decision_id, issued_by=body.issued_by)
+    except Exception as exc:
+        raise _handled(exc) from exc
+
+
+@router.get("/audit/replay-attestation", tags=["audit"])
+def replay_attestation(limit: int = 200, session: Session = Depends(get_session)) -> dict[str, Any]:
+    """Portfolio-level proof that recorded decisions still reproduce from recorded facts (C3)."""
+    return explainability.replay_all(session, limit=limit)
+
+
+# ------------------------------------------------------------------------------------------
+# Outcomes, evaluation and drift (PLS-52, PLS-73, PLS-85)
+# ------------------------------------------------------------------------------------------
+
+
+@router.get("/outcomes", tags=["outcomes"])
+def outcome_summary(
+    arp_key: str | None = None, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    return {
+        "labels": outcomes.LABELS,
+        "distribution": outcomes.label_distribution(session, arp_key=arp_key),
+        "precision": outcomes.precision(session, arp_key=arp_key),
+        "alert_quality": outcomes.alert_quality(session),
+        "unlabelled": outcomes.unlabelled(session),
+    }
+
+
+@router.post("/outcomes", tags=["outcomes"])
+def label_outcome(body: OutcomeLabelIn, session: Session = Depends(get_session)) -> dict[str, Any]:
+    try:
+        row = outcomes.label(
+            session,
+            subject_type=body.subject_type,
+            subject_id=body.subject_id,
+            label=body.label,
+            entity_id=body.entity_id,
+            exit_classification=body.exit_classification,
+            predicted=body.predicted,
+            observed=body.observed,
+            arp_key=body.arp_key,
+            note=body.note,
+            labelled_by=body.labelled_by,
+        )
+    except Exception as exc:
+        raise _handled(exc) from exc
+    return {
+        "id": row.id,
+        "subject_type": row.subject_type,
+        "subject_id": row.subject_id,
+        "label": row.label,
+        "arp_key": row.arp_key,
+        "labelled_by": row.labelled_by,
+        "labelled_at": row.created_at,
+    }
+
+
+@router.get("/governance/drift", tags=["governance"])
+def drift_report(session: Session = Depends(get_session)) -> dict[str, Any]:
+    return {"features": evaluation.feature_drift(session)}
+
+
+@router.post("/governance/drift/sweep", tags=["governance"])
+def drift_sweep(session: Session = Depends(get_session)) -> dict[str, Any]:
+    """Demote any ARP whose agreement with accountable humans has fallen through the floor."""
+    return evaluation.sweep(session)
+
+
+@router.get("/governance/experiments/{key}", tags=["governance"])
+def experiment(key: str, session: Session = Depends(get_session)) -> dict[str, Any]:
+    try:
+        return evaluation.experiment_result(session, key)
+    except Exception as exc:
+        raise _handled(exc) from exc
+
+
+# ------------------------------------------------------------------------------------------
+# AI access spine (PLS-80, PLS-82, PLS-83)
+# ------------------------------------------------------------------------------------------
+
+
+@router.get("/ai/budget", tags=["ai"])
+def ai_budget(session: Session = Depends(get_session)) -> dict[str, Any]:
+    return ai_gateway.budget_state(session)
+
+
+@router.get("/ai/invocations", tags=["ai"])
+def ai_invocations(limit: int = 100, session: Session = Depends(get_session)) -> list[dict[str, Any]]:
+    return ai_gateway.invocation_log(session, limit=limit)
+
+
+@router.post("/ai/context", tags=["ai"])
+def assemble_context(
+    body: ContextRequestIn, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    """What an agent would actually be given: the intersection of ARP scope and caller rights."""
+    if session.get(Entity, body.entity_id) is None:
+        raise HTTPException(status_code=404, detail=f"unknown entity {body.entity_id}")
+    caller = entitlements.Caller(
+        actor=body.actor,
+        role=body.role,
+        regions=tuple(body.regions),
+        max_classification=body.max_classification,
+    )
+    try:
+        manifest = context_assembly.assemble(
+            session,
+            caller=caller,
+            declared_scopes=body.scopes,
+            entity_id=body.entity_id,
+        )
+    except Exception as exc:
+        raise _handled(exc) from exc
+    return manifest.as_dict()

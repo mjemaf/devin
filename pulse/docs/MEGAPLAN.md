@@ -1,142 +1,128 @@
 # PULSE — Risk & Compliance Intelligence Platform · Megaplan
 
-**Status:** proposal + working reference implementation in this repo
-**Inputs:** Pulse Northstar / Why Pulse, Pulse Architecture, Pulse Path Forward, Pulse use-case
-inventory (129 use cases), R&C Portfolio Blind-Spots memo, Credit & Risk Engineering strategy,
-The Agentic Oversight Framework (Sardine et al.)
+**Status:** plan of record + working reference implementation in this repo
+**Inputs:** PULSE Technical Architecture (current spec, supersedes the earlier Pulse Architecture
+deck), Pulse Northstar / Why Pulse, Pulse Path Forward, Pulse use-case inventory (129 use cases),
+R&C Portfolio Blind-Spots memo, Credit & Risk Engineering strategy, The Agentic Oversight
+Framework
+
+Companions: [ARCHITECTURE.md](./ARCHITECTURE.md) · [GOVERNANCE.md](./GOVERNANCE.md)
 
 ---
 
 ## 1. The bet
 
-The Northstar decks and the blind-spots memo agree on the diagnosis but not on the sequencing.
-The use-case inventory is 129 items deep and is, read literally, a backlog of tools. The memo's
-verdict is the one to build against:
+The use-case inventory is 129 items deep and reads, literally, as a backlog of tools. The
+blind-spots memo's verdict is the one to build against:
 
 > Sequence the spine before the surface.
 
-So PULSE is built as **three platform bets first**, and the 129 use cases become plug-ins on top:
+The Technical Architecture makes that concrete: capability is organised as **KNOW → DETECT → ACT**
+sitting on a **foundation data plane**, with two cross-cutting spines — **Governance** and **AI
+Access** — that every capability must go through. The 129 use cases then become configuration on
+top of ~48 registered components rather than 129 projects.
 
 | Bet | What it is | Why first |
 | --- | --- | --- |
-| **A · Shared intelligence substrate** | Canonical merchant/entity model, entity resolution, knowledge + policy corpus with versioning, entity & ownership graph, feature/signal store, one decision + agent audit log | De-duplicates data work listed 129 times; makes every later use case cheaper |
-| **B · Governance & agent oversight as a product** | Automated Resolution Pathways (ARPs), shadow mode, four-eyes, scoped autonomy, evals/backtests, drift, explainability, adverse-action reasons, examiner-ready export, kill switch | Four+ agentic use cases otherwise ship four inconsistent control regimes; SR 11-7 / ECOA exposure is the fastest path to a finding |
-| **C · Perpetual + real-time monitoring** | Continuous KYC/screening refresh, behavioural & business-model drift, portfolio surveillance, transaction-time signals, event-driven recompute | Most realised loss and enforcement exposure happens *after* boarding — where the inventory is thinnest |
+| **A · Foundation + KNOW** | Bi-temporal fact substrate, entity resolution, approved knowledge/policy corpus, ownership graph, Merchant 360 | De-duplicates the data work implied 129 times; grounded answers are impossible without it |
+| **B · The two spines** | Governance spine (audit ledger, MRM registry, ARP registry + four-eyes, evals/drift, explainability, entitlements) and AI access spine (model gateway, agent/skill registry, context assembly, cost metering, sandbox, experimentation) | Any agentic use case shipped before the spines ships its own control regime; SR 11-7 / ECOA exposure is the fastest route to a finding |
+| **C · DETECT + perpetual monitoring** | Continuous screening refresh, ownership/business-model change, peer cohorts, transaction-time detection, event-driven recompute | Most realised loss and enforcement exposure happens *after* boarding — where the inventory is thinnest |
+| **D · ACT under the spines** | ARP runtime, requirement orchestration, action broker with rollback, outcome/feedback loop | Automation is only safe once every effect is brokered, attributable and reversible |
 
-**Design invariants** (every capability must satisfy these or it does not ship):
+### Design principles (P1–P10)
 
-1. **Grounded or silent.** No answer without a citation to a versioned knowledge object or a
-   resolved fact. Refusal is a valid, logged outcome.
-2. **Risk is a state, not a snapshot.** Every score carries `as_of`, inputs, and a recompute
-   trigger. Point-in-time-only capabilities are rejected at design review.
-3. **Entity-first, not application-first.** The unit of analysis is the resolved entity and its
-   network, never the application record.
-4. **One audit spine.** Every machine and human action lands in a single append-only,
-   hash-chained decision log. No per-use-case audit trails.
-5. **Autonomy is earned.** Every agent starts in shadow, graduates by measured agreement rate
-   against human outcomes, and can be demoted or killed by config without a release.
-6. **Policy as code, versioned.** The rule in effect at any past date is retrievable and
-   replayable.
+P1 grounded by default · P2 single master per entity with federated attribute ownership ·
+P3 bi-temporal everything · P4 deterministic before probabilistic before paid · P5 composable
+capability · P6 human accountability preserved · P7 event-driven by default · P8 configuration
+over release · P9 observability as a build requirement · P10 reuse the approved estate.
+
+### Non-negotiable commitments (C1–C8)
+
+C1 citations with provenance and freshness on every answer, score and recommendation · C2 the
+knowledge graph is a system of reference, never of record · C3 policy, rules, thresholds and facts
+are versioned, retrievable and replayable · C4 deterministic → internal model → paid vendor · C5
+agents hold no source-system credentials; access is brokered, scoped, logged · C6 every
+consequential decision has a named, timestamped accountable human · C7 every state transition
+publishes a canonical event · C8 PII is tokenised before storage and residency is configuration.
+
+Every one of C1–C8 has regression coverage in `backend/tests/` (`test_platform_fabric.py`,
+`test_governance_spine.py`, `test_act_spine.py`, `test_api_architecture.py`). A commitment without
+a test is a slogan.
 
 ---
 
-## 2. Target architecture
-
-Three pillars from the Pulse Architecture deck, made concrete. Full detail:
-[ARCHITECTURE.md](./ARCHITECTURE.md).
+## 2. Target architecture in one view
 
 ```
-                       ENGAGEMENT LAYER  (consumption surfaces)
-   Analyst console · Merchant portal · Sales tools · Case mgmt · Comms · Partner console · APIs
-                                        │  ask / act
-                                        ▼
-┌──────────────────────────────────────────────────────────────────────────────────────┐
-│                      CONTEXTUAL LAYER — the Intelligence Layer                       │
-│                                                                                      │
-│  KNOW                          DETECT                        ACT                     │
-│  ─ Grounded policy Q&A         ─ Materiality assessment      ─ Agent layer (ARPs)     │
-│  ─ True merchant identity      ─ Scoring & models            ─ Workflows / tasks      │
-│  ─ KYB & identity verify       ─ Drift & anomaly             ─ Notices & RFI          │
-│  ─ UBO graph (3 hops)          ─ Peer-cohort comparison      ─ Limits / holds         │
-│  ─ Network / link analysis     ─ Perpetual monitors          ─ Straight-through paths  │
-│  ─ Merchant 360 + history      ─ Alert triage & severity     ─ Human-in-the-loop gates │
-│                                                                                      │
-│  Knowledge graph · semantic layer · RAG retrieval · memory · policy-as-code · rules   │
+                       ENGAGEMENT (PLS-60…65)
+   Analyst workbench · Merchant portal · Partner console · Comms & task inbox · External APIs
+                                        │ ask / act
+┌───────────────────────────────────────▼──────────────────────────────────────────────┐
+│  KNOW (PLS-20…27)          DETECT (PLS-30…42)           ACT (PLS-50…55)              │
+│  knowledge base core       rules & decision engine      agent runtime / ARP executor  │
+│  entity resolution         scoring & model serving      workflow binding              │
+│  knowledge graph / UBO     materiality & triggers       outcome & feedback            │
+│  semantic retrieval        signals & alerts             action broker                 │
+│  policy-as-code            peer cohorts                 requirement orchestration     │
+│  grounded answers          classification               document / adverse action     │
+│  memory & case context     perpetual monitoring                                       │
+│  Merchant 360              screening                                                  │
 ├──────────────────────────────────────────────────────────────────────────────────────┤
-│  GOVERNANCE SPINE  — ARP registry · autonomy tiers · four-eyes · evals · drift ·      │
-│                      explainability · hash-chained audit · kill switch · residency    │
+│  GOVERNANCE SPINE (PLS-70…75)   audit ledger · MRM registry · ARP registry & four-eyes │
+│                                 evals/backtest/drift · explainability · entitlements  │
+│  AI ACCESS SPINE  (PLS-80…85)   model gateway · agent & skill registry · context      │
+│                                 assembly · cost metering · sandbox · experimentation  │
 ├──────────────────────────────────────────────────────────────────────────────────────┤
-│                                 DATA LAYER                                            │
-│  Entity resolution · CRM/MDM masters · 3rd-party gateway (registry, sanctions, media, │
-│  bureau) · document & evidence store · event fabric · data quality, lineage, PII      │
+│  FOUNDATION (PLS-10…17)  ingestion · vendor gateway · document & evidence · event      │
+│  fabric · data quality/lineage/provenance · feature store · transaction normalisation │
+│  · reference & master data binding                                                    │
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Service decomposition
+48 components, each with an id, layer, horizon, delivery state and the modules that implement it.
+The register is queryable (`GET /api/platform/components`) and honest by construction:
 
-| Service | Owns | Key interfaces |
+| State | Meaning | Count in this repo |
 | --- | --- | --- |
-| `knowledge` | Policy/regulation/scheme corpus, chunking, embeddings, versioning, effective-dating, grounded Q&A | `POST /knowledge/ask`, `GET /knowledge/documents/{id}/versions` |
-| `entity` | Canonical entity + merchant records, entity resolution, KYB verification, UBO graph, link analysis | `POST /entities/resolve`, `GET /entities/{id}/ubo`, `GET /entities/{id}/network` |
-| `screening` | Sanctions/PEP/watchlist/adverse-media matching, continuous re-screening | `POST /screening/run`, `GET /screening/hits` |
-| `decision` | Policy-as-code rules engine, risk scoring, materiality, limits/reserve maths, adverse-action reasons | `POST /decisions/evaluate`, `GET /decisions/{id}/explain` |
-| `monitoring` | Monitor registry, cadence + event triggers, drift detection, alert generation, peer cohorts | `POST /monitoring/run`, `GET /alerts` |
-| `agents` | ARP registry, agent runs, shadow mode, recommendations, four-eyes queue, evals, kill switch | `POST /agents/{arp}/run`, `POST /agent-runs/{id}/review` |
-| `cases` | Case lifecycle, tasks, evidence packs, SLA/ageing, queue management | `POST /cases`, `POST /cases/{id}/transition` |
-| `audit` | Append-only hash-chained event log, examiner export, replay | `GET /audit/events`, `GET /audit/verify`, `GET /audit/export` |
-| `gateway` | One governed path to third-party data: metering, caching, tiered calling, cost attribution | internal |
-
-### Non-functional targets
-
-| Concern | Target |
-| --- | --- |
-| Decision API latency | p50 < 120 ms, p99 < 400 ms (synchronous boarding path) |
-| Real-time auth controls | p99 < 50 ms decision, fail-open with logged degradation |
-| Perpetual refresh | sanctions re-screen ≤ 24 h of list change; identity/ownership ≤ 30 days or on event |
-| Audit | 100 % of machine + human actions, tamper-evident, 7-year retention, examiner export < 1 h |
-| Availability | 99.95 % boarding decision path; graceful degradation to human queue |
-| Data residency | Per-tenant/region storage class, config-driven, no code fork per geography |
-| Bureau/vendor cost | −35 % cost per boarding via dedupe, cache, tiered calling (Credit strategy Pillar 4) |
-| Explainability | Every automated decision returns reason codes + feature attribution + counterfactual |
+| `implemented` | behaviour exists and is exercised by tests | 36 |
+| `reference` | contract-shaped stand-in; production form is an adapter swap | 9 |
+| `planned` | declared with owner and horizon, no code | 3 |
 
 ---
 
-## 3. Governance model (from the Agentic Oversight Framework)
+## 3. Governance model
 
-The AOF's six processes are implemented as platform primitives rather than per-use-case
-paperwork. Detail: [GOVERNANCE.md](./GOVERNANCE.md).
+Detail in [GOVERNANCE.md](./GOVERNANCE.md). The short form:
 
-1. **ARPs** — an agent is only ever deployed as (agent × task × SOP × data scope × success
-   criteria). Registered, versioned, reviewable.
-2. **Data preparation** — ARPs declare their data contract; the substrate provides validated,
-   freshness-stamped inputs. Undeclared data access is denied.
-3. **Decision & presentation** — the agent recommends; a human with the right entitlement
-   disposes. Recommendation ships with rationale, citations and decision path.
-4. **Audit trail** — hash-chained events: inputs, retrievals, models consulted, rationale,
-   human disposition, timestamps.
-5. **Governance structure** — three lines of defence mapped: 1LoD operates ARPs, 2LoD owns
-   thresholds/validation, 3LoD audits via the same export.
-6. **Explainability** — feature attribution, decision tracing, counterfactuals, threshold
-   sensitivity; ECOA-grade adverse-action reason codes for anything credit-adjacent.
+- **ARPs, not "agents".** An agent is only ever deployed as (agent × task × SOP × data scope ×
+  success criteria × autonomy tier × ceiling), registered and versioned.
+- **Autonomy ladder** — canonical naming from the Technical Architecture, with the persisted
+  values kept for API/data compatibility:
 
-**Autonomy ladder** (config, not code):
+  | Canonical | Persisted | Acts? |
+  | --- | --- | --- |
+  | shadow | `shadow` | no, logs only |
+  | copilot | `suggest` | no, surfaces a recommendation |
+  | assisted-auto | `four_eyes` | on a second human approval |
+  | bounded-auto | `auto_bounded` | alone, inside declared bounds |
 
-| Tier | Behaviour | Graduation gate |
-| --- | --- | --- |
-| `shadow` | Runs, logs, never surfaces | ≥ 500 cases, agreement ≥ 95 %, no severity-1 miss |
-| `suggest` | Surfaces recommendation to analyst | agreement ≥ 97 %, review time reduction demonstrated |
-| `four_eyes` | Acts on second human approval | stable 90 days, 2LoD sign-off |
-| `auto_bounded` | Acts alone inside declared bounds (low materiality, reversible) | risk-committee sign-off, kill switch tested |
-
-Anything that is irreversible, adverse to the merchant, or credit-decisioning stays at
-`four_eyes` or below — permanently.
+  Promotion is earned and gated; demotion is automatic on drift, agreement decay or a severity-1
+  miss. Irreversible, adverse or credit-decisioning actions are permanently capped at
+  assisted-auto.
+- **Every effect is brokered.** No capability mutates the outside world directly: the action
+  broker enforces approval, records authority basis, and issues a time-boxed rollback token that
+  restores the state the action replaced.
+- **Every decision is replayable.** `facts_relied` + `fact_provenance` + `model_versions` +
+  policy version + `degraded_checks`, so `GET /api/decisions/{id}/replay` reconstructs the
+  decision as it was made, not as the world is now.
 
 ---
 
-## 4. Use-case portfolio: how the 129 map onto the spine
+## 4. Use-case portfolio: 129 → 48 components
 
-Machine-readable inventory: [`data/use_cases.csv`](../data/use_cases.csv) (129 rows, extracted
-from the source deck). Distribution by domain:
+Machine-readable inventory: [`data/use_cases.csv`](../data/use_cases.csv). Traceability is served
+by the platform (`GET /api/platform/traceability`): every use case names the components it needs,
+their delivery state, and what blocks it. Distribution by domain:
 
 | Domain | Count | Domain | Count |
 | --- | --- | --- | --- |
@@ -147,81 +133,39 @@ from the source deck). Distribution by domain:
 | Credit | 12 | Boarding | 7 |
 | | | Partner Oversight | 7 |
 
-Sequencing rule: a use case is only scheduled once the substrate primitives it needs exist.
-That collapses 129 items into ~14 primitives plus configuration.
+Sequencing rule: a use case is scheduled only once the components it depends on are `implemented`
+or `reference`. **Grounded policy Q&A is the first vertical** (per Path Forward) because it
+exercises the full stack end to end — approved corpus, context assembly, AI gateway, citations,
+refusal, audit — on the narrowest possible blast radius.
 
-| Primitive (build once) | Use cases it unlocks |
-| --- | --- |
-| Versioned knowledge corpus + grounded Q&A | UC 1–7, 11, 91–92, 201, 205–211 (Knowledge, 18) |
-| Entity resolution + confidence | UC 203, 300, and every merchant-keyed use case |
-| UBO graph + link analysis | UC 301, 41, 66, 97, 63 (relational risk) |
-| KYB / identity / screening | UC 302–304, 306, 312 |
-| Classification engine | UC 6, 14, 19, 20, 71 |
-| Policy-as-code rules + thresholds registry | UC 200, 22, 26, 34, 45, 48–50, 316 |
-| Scoring + materiality + peer cohorts | UC 15, 32, 52–55, 58, 110–115 |
-| Monitor registry (cadence + event) | UC 17, 18, 23, 24, 28, 212, 306 |
-| Case + task + evidence pack | UC 5, 25, 30, 117, 66 |
-| Document generation | UC 2, 16, 43, 46, 53, 62 |
-| RFI / unified request orchestration | UC 21, 47, 70, 57 |
-| Agent + ARP framework | UC 73–75, 87, 111–116 |
-| Third-party gateway + cost mgmt | UC 76–77, 107, 108 |
-| Partner oversight feeds + scoring | UC 88–96 |
-
-The eight "KNOW" use cases the decks name (true merchant identification, KYB, UBO graph,
-network/link analysis, grounded policy Q&A, regulatory/network event tracking, merchant history
-walkthrough, Merchant 360) are exactly the substrate's read surface — which is why they are
-Phase 1, with **grounded policy Q&A as the first use case** (per Path Forward).
+Monetisation surfaces (the 8 "Future" use cases, ADR-012) are deliberately deferred until
+commercially specified; the internal contracts are versioned and metered now so they can be
+exposed without re-architecting the API.
 
 ---
 
-## 5. Roadmap
+## 5. Roadmap (H0–H5)
 
-Sizing note: phases are expressed in engineering-team-quarters for a ~4-team org shaped like the
-Credit & Risk strategy doc (Decisioning Platform, Model/MLOps, Monitoring & Surveillance,
-Data & Bureau Integration) plus one Knowledge/Intelligence team.
+Sizing is in delivery horizons, not calendar quarters, because the gating factor is component
+readiness rather than headcount. `GET /api/platform/roadmap` reports delivered/total per horizon.
 
-### Phase 0 — Foundations (Q1)
-- Canonical data model + event fabric + document/evidence store; PII tokenisation at ingest.
-- Audit spine (hash-chained) and entitlements/SoD from day one — retrofitting audit is the
-  classic failure.
-- Third-party gateway with metering/caching (immediately harvests bureau-cost savings).
-- **Exit:** every write is audited; one governed path to external data; masters populated.
-
-### Phase 1 — KNOW (Q1–Q2) · *the eight KNOW use cases*
-- Knowledge corpus: ingestion, chunking, effective-dated versioning, grounded Q&A with
-  citations + refusal. **First use case.**
-- Entity resolution with confidence scores; Merchant 360; history walkthrough.
-- KYB + identity verification; UBO graph to 3 hops; sanctions/PEP/adverse media; link analysis
-  incl. previously off-boarded actors.
-- **Exit:** an analyst can answer "who is this, how are they connected, and what do our policies
-  require?" in one place, with citations. Baseline: analyst hours/case, time-to-decision.
-
-### Phase 2 — Governance spine + DETECT (Q2–Q3)
-- ARP registry, shadow mode, four-eyes queue, evals/backtests, drift, explainability,
-  adverse-action reason codes, examiner export, kill switch.
-- Policy-as-code rules + thresholds registry; risk scoring with materiality; peer cohorts.
-- Perpetual monitors: continuous re-screening, business-model drift, review cadence.
-- **Exit:** first ARP graduates shadow → suggest with measured agreement; risk is recomputed
-  continuously, not at boarding only.
-
-### Phase 3 — ACT (Q3–Q4)
-- Case/task orchestration, RFI orchestration, document + notice generation, auto-boarding inside
-  pre-set limits, reserve/limit engine, holds and velocity caps.
-- Transaction monitoring: canonical transaction model, multi-source detection, alert triage and
-  severity routing, outcome labelling → model feedback.
-- **Exit:** straight-through processing for low-materiality flows; measured loss-avoided.
-
-### Phase 4 — Scale & monetise (Y2)
-- Partner oversight (ISO/payfac/sub-merchant), multi-geography configuration, negative-entity
-  consortium, risk-scoring API, embedded partner console, peer benchmarking.
-- **Exit:** capabilities consumed externally; network effects on the negative file.
+| Horizon | Theme | Exit criterion |
+| --- | --- | --- |
+| **H0** | Validation | Retrieval, entity resolution, audit ledger and policy store prove the spine on one narrow flow |
+| **H1** | Foundation + grounded policy Q&A | Every write audited; one governed egress to external data; bi-temporal facts with provenance; grounded answer with citations *and* a working refusal path |
+| **H2** | Grounded intelligence | Resolved entities, UBO to three hops, network/link analysis incl. previously off-boarded actors, Merchant 360, analyst workbench |
+| **H3** | Detect + perpetual monitoring | Continuous re-screening and ownership/business-model change detection, feature store with one definition online and offline, peer cohorts, drift with automatic ARP demotion |
+| **H4** | Act | ARP runtime under four-eyes, requirement orchestration, brokered actions with rollback, adverse-action notices generated from the decision record |
+| **H5** | Scale + ecosystem | Partner oversight, multi-region residency as configuration, negative-file consortium, embedded/external API surface |
 
 ### Sequencing anti-patterns to refuse
-- Shipping any agentic use case before the ARP spine (creates a parallel control regime).
-- Shipping a credit or adverse decision without reason codes and counterfactuals.
-- Any "phase 2 will add continuous monitoring" plan — perpetual is a Phase 1/2 property of the
-  scoring contract, not a later feature.
-- Per-geography forks. Geography is configuration.
+- Any agentic use case before the governance and AI access spines (creates a parallel control
+  regime that must later be unwound).
+- Any credit or adverse decision without reason codes and counterfactuals generated at decision
+  time.
+- Any "phase 2 adds continuous monitoring" plan — perpetual is a property of the scoring contract.
+- Any capability that reaches an external system without going through the broker or the gateway.
+- Per-geography forks. Residency is configuration (ADR-010).
 
 ---
 
@@ -232,12 +176,13 @@ Instrument on outcome dollars, not handling time alone (blind-spots memo).
 | Layer | Metric | Baseline → target |
 | --- | --- | --- |
 | Merchant | Time to boarding decision; documents requested more than once | weeks → hours; > 0 → 0 |
-| Analyst | Hours per case; % of case time spent finding vs judging | −40 %; invert the ratio |
-| Detection | Loss avoided (\$); alert precision; % relational risk found only by graph | new baselines |
-| Perpetual | Median staleness of identity/ownership/screening state | < 30 d / < 24 h |
-| Agentic | Agreement rate vs human; queue resolution rate; escalation rate; cost per decision | KYC-type ARPs > 95 % agreement (AOF reports 98 % resolution; sanctions/media ~55 %) |
-| Governance | % decisions with complete audit chain; examiner export time; open model findings | 100 %; < 1 h; 0 overdue |
-| FinOps | Vendor cost per boarding; % answered by own models before vendor call | −35 %; rising |
+| Analyst | Hours per case; % of case time finding vs judging | −40 %; invert the ratio |
+| Detection | Loss avoided ($); alert precision; % relational risk found only by graph | new baselines |
+| Perpetual | Median staleness of identity / ownership / screening state | < 30 d / < 24 h |
+| Agentic | Agreement rate vs human; queue resolution; escalation rate; cost per decision | KYC-type ARPs > 95 % agreement |
+| Governance | % decisions with a complete audit chain and replay attestation; examiner export time | 100 %; < 1 h |
+| FinOps | Vendor cost per boarding; % answered before a paid call; AI spend per decision vs budget | −35 %; rising; within cap |
+| Platform | NFR attainment against the published latency and availability targets | all paths inside target |
 
 ---
 
@@ -245,24 +190,25 @@ Instrument on outcome dollars, not handling time alone (blind-spots memo).
 
 | Risk | Mitigation |
 | --- | --- |
-| Spine work is invisible to stakeholders; pressure to ship surfaces | Phase 1 ships a visible analyst surface (Merchant 360 + grounded Q&A) on top of the spine, not after it |
-| Grounded Q&A hallucinates policy | Retrieval-only answers, mandatory citations, refusal path, eval set with regression gate |
-| Entity resolution false merges | Confidence bands, human review above materiality threshold, reversible merges with full lineage |
-| Agent autonomy creep | Autonomy tiers in config with committee gates; kill switch tested quarterly |
-| Prompt injection / model failure (unaddressed in source portfolio) | Untrusted content quarantined from tool-calling context, allow-listed tools, red-team suite, fallback to human queue |
-| Vendor lock-in on knowledge/LLM | Provider-pluggable inference; retrieval index owned in-house |
-| Multi-jurisdiction divergence | Policy-as-code with jurisdiction predicates; residency config |
+| Spine work is invisible; pressure to ship surfaces | H1/H2 ship a visible analyst surface *on* the spine, not after it |
+| Grounded Q&A hallucinates policy | Retrieval-only composition over approved versions, mandatory citations, grounding floor, logged refusal, eval regression gate |
+| Entity resolution false merges | Confidence bands, human review above a materiality threshold, reversible merges with full lineage |
+| Autonomy creep | Tiers and ceilings in configuration with committee gates; automatic demotion on drift; kill switch drills |
+| Prompt injection / model failure | Untrusted content never enters a tool-calling context; allow-listed tools per ARP; red-team suite; fallback to the human queue |
+| Silent degradation | Stale or unavailable inputs surface as `degraded_checks` on the decision and as source-feed health, never as silence |
+| Vendor lock-in on inference | All inference behind the AI gateway with a local default provider; retrieval index owned in-house |
+| Multi-jurisdiction divergence | Policy-as-code with jurisdiction predicates; residency and region as entitlement context |
+| Event-schema churn breaking consumers | Versioned topics, required-field schemas, dual-write windows, replayable log |
 
 ---
 
 ## 8. What this repo contains
 
-A working reference implementation of the spine and the eight KNOW use cases, plus the
-governance spine and perpetual monitoring — enough to demonstrate the invariants above end to
-end on synthetic data. See [../README.md](../README.md) for how to run it, and
-[ARCHITECTURE.md](./ARCHITECTURE.md) for how the code maps to the target architecture.
+A working reference implementation of the foundation, both spines, KNOW, DETECT and ACT — enough
+to demonstrate C1–C8 end to end on synthetic data, plus the React analyst console. See
+[../README.md](../README.md) to run it and [ARCHITECTURE.md](./ARCHITECTURE.md) for the code map.
 
-It is deliberately **not** a production system: third-party providers (registry, sanctions,
-media, bureau) are simulated behind the same interfaces production adapters would implement, and
-inference defaults to a local deterministic retrieval engine so the platform runs with no
-external keys.
+It is deliberately **not** production: the event fabric is durable but in-process, vendor
+providers are simulated behind production-shaped adapters, and inference defaults to a local
+deterministic provider so the platform runs with no external keys. Those components are marked
+`reference` in the register rather than described as finished.

@@ -43,8 +43,21 @@ class Settings(BaseSettings):
     suggest_min_agreement: float = 0.95
     four_eyes_min_agreement: float = 0.97
 
+    # Drift: agreement floor below which an ARP is demoted automatically (PLS-73)
+    drift_agreement_floor: float = 0.90
+    drift_min_observations: int = 20
+
     # Third-party gateway
     gateway_cache_ttl_seconds: int = 86_400
+
+    # AI model gateway spend controls (PLS-83). Budgets are per accounting period, in currency
+    # units; a use case with no entry is uncapped but still metered.
+    ai_period_budget: float | None = 250.0
+    ai_use_case_budgets: dict[str, float] = {
+        "policy_qa": 100.0,
+        "case_recommendation": 100.0,
+        "document_generation": 25.0,
+    }
 
     # Seeds the synthetic portfolio on first start so a fresh clone has something to look at.
     seed_on_startup: bool = True

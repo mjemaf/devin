@@ -20,10 +20,12 @@ from app.services import (
     agents,
     audit,
     cases,
+    events,
     graph,
     kyb,
     materiality,
     policy,
+    provenance,
     resolution,
     scoring,
     screening,
@@ -161,6 +163,7 @@ def board(
         risk_band=score.band,
     )
 
+    staleness = provenance.staleness_report(session, entity.id)
     decision = Decision(
         entity_id=entity.id,
         decision_type="boarding",
@@ -173,6 +176,17 @@ def board(
         materiality=consequence.level,
         required_oversight=consequence.permitted_autonomy,
         actor=actor,
+        jurisdiction=jurisdiction,
+        facts_relied=facts,
+        fact_provenance=audit.jsonable(
+            provenance.citation_bundle(session, entity.id, sorted(facts))
+        ),
+        model_versions=[
+            f"{score.model_key} v{score.model_version}",
+            f"{evaluation.pack} v{evaluation.version}",
+        ],
+        confidence=resolved.confidence,
+        degraded_checks=staleness["by_freshness"]["stale"],
     )
     session.add(decision)
     session.flush()
@@ -228,6 +242,24 @@ def board(
             "case_id": case.id if case else None,
             "agent_run_id": agent_run.id if agent_run else None,
         },
+    )
+
+    events.publish(
+        session,
+        events.Event(
+            name=events.DECISION_RECORDED,
+            subject_type="decision",
+            subject_id=decision.id,
+            payload={
+                "entity_id": entity.id,
+                "decision_type": "boarding",
+                "outcome": evaluation.outcome,
+                "policy": f"{evaluation.pack} v{evaluation.version}",
+                "materiality": consequence.level,
+                "required_oversight": consequence.permitted_autonomy,
+                "case_id": case.id if case else None,
+            },
+        ),
     )
 
     return {

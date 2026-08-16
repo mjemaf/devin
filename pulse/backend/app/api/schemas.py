@@ -141,3 +141,92 @@ class PolicyEvalIn(BaseModel):
     facts: dict[str, object] = Field(default_factory=dict)
     as_of: dt.date | None = None
     jurisdiction: str = "global"
+
+
+class ReplayIn(BaseModel):
+    topics: list[str] = Field(default_factory=list)
+    since: dt.datetime | None = None
+    dry_run: bool = True
+
+
+class RequirementIn(BaseModel):
+    entity_id: int
+    requirement_type: str
+    case_id: int | None = None
+    due_days: int | None = None
+    rationale: str = ""
+    requested_by: str = "analyst@pulse.example"
+
+
+class RequirementSatisfyIn(BaseModel):
+    evidence_id: int
+    actor: str = "analyst@pulse.example"
+
+
+class ApprovalRequestIn(BaseModel):
+    subject_type: str = "entity"
+    subject_id: int | None = None
+    decision_class: str
+    action: str
+    severity: str = "medium"
+    required_role: str = "second_line"
+    payload: dict[str, object] = Field(default_factory=dict)
+    proposer: str = "analyst@pulse.example"
+    proposer_role: str = "analyst"
+
+
+class ApprovalDecisionIn(BaseModel):
+    approve: bool
+    rationale: str
+    approver: str = "supervisor@pulse.example"
+    approver_role: str = "second_line"
+
+
+class BrokeredActionIn(BaseModel):
+    action_type: str
+    entity_id: int | None = None
+    authority_basis: str
+    case_id: int | None = None
+    rule_ref: str | None = None
+    rule_version: str | None = None
+    approval_request_id: int | None = None
+    evidence: dict[str, object] = Field(default_factory=dict)
+    actor: str = "analyst@pulse.example"
+    actor_role: str = "analyst"
+    actor_type: str = "human"
+
+
+class ActionRollbackIn(BaseModel):
+    reason: str
+    actor: str = "analyst@pulse.example"
+
+
+class OutcomeLabelIn(BaseModel):
+    subject_type: str
+    subject_id: int
+    label: str
+    entity_id: int | None = None
+    exit_classification: str | None = None
+    predicted: str | None = None
+    observed: str | None = None
+    arp_key: str | None = None
+    note: str | None = None
+    labelled_by: str = "analyst@pulse.example"
+
+
+class AdverseActionIn(BaseModel):
+    issued_by: str = "analyst@pulse.example"
+
+
+class TransactionBatchIn(BaseModel):
+    source_platform: str = "acquiring"
+    events: list[dict[str, object]] = Field(default_factory=list)
+
+
+class ContextRequestIn(BaseModel):
+    entity_id: int
+    scopes: list[str] = Field(default_factory=list)
+    actor: str = "analyst@pulse.example"
+    role: str = "analyst"
+    regions: list[str] = Field(default_factory=lambda: ["global"])
+    max_classification: str = "confidential"
