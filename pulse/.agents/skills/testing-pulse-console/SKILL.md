@@ -1,6 +1,6 @@
 ---
 name: testing-pulse-console
-description: How to run and end-to-end test the Pulse risk & compliance analyst console (FastAPI backend + Vite/React frontend), including seeded fixture data, hardcoded actor identities, and how to exercise the four-eyes approval path.
+description: How to run and end-to-end test the Pulse risk & compliance analyst console (FastAPI backend + Vite/React frontend), including seeded fixture data, hardcoded actor identities, the four-eyes approval path, and the API-only architecture/governance/AI/ACT spines that have no UI.
 ---
 
 # Testing the Pulse analyst console
@@ -23,17 +23,22 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/uvicorn.log 2>&1 &
 cd <repo>/pulse/frontend && npm run dev   # http://localhost:5173, proxies /api -> :8000
 ```
 
+**Check the port Vite actually bound.** If a dev server from an earlier session still holds 5173,
+Vite silently falls back to 5174 and you will test a stale build without noticing. Kill the old
+process and confirm the banner says 5173 before testing:
+`lsof -ti:5173 | xargs -r kill`.
+
 Routes: `/dashboard`, `/merchants`, `/merchants/:entityId`, `/cases`, `/agents`, `/policy`, `/audit`.
 API docs at `http://127.0.0.1:8000/docs`; everything is under `/api`.
 
 **If you see sqlite `no such column` errors**, the checked-in DB is stale relative to the ORM
 models. Delete it and restart uvicorn so the schema is recreated and reseeded:
-`rm -f <repo>/pulse/backend/pulse.db`. Seeding is idempotent per fresh DB and writes ~85 audit
+`rm -f <repo>/pulse/backend/pulse.db`. Seeding is idempotent per fresh DB and writes ~147 audit
 events; note that number before testing so you can assert the ledger grew.
 
 ## Seeded fixtures worth knowing
 
-- Entity `24` "Halcyon Wellness Ltd" is the rich fixture: UBO gap, adverse media, negative-file
+- Entity `29` "Halcyon Wellness Ltd" is the rich fixture: UBO gap, adverse media, negative-file
   hit, and a shared-address/director link to entity `1` "Meridian Wellness Ltd" (off-boarded).
   Its risk score is 78.43 and its boarding decision is `refer`.
 - Actor identities are **hardcoded in the frontend**, not chosen in the UI:
@@ -66,6 +71,43 @@ curl -s -w '\n%{http_code}\n' -X POST \
 # 409 {"detail":"four-eyes breach: the approver must be a different person from the reviewer"}
 ```
 
+## The console covers only part of the platform
+
+The React app declares exactly **7 routes / 6 nav items** (`App.tsx`): Dashboard, Merchants,
+Merchant 360, Cases & alerts, Agent review, Policy Q&A, Audit. Large parts of the backend have
+**no UI at all** — the PLS component register, architecture/traceability/roadmap/ADRs, the event
+fabric, the governance spine (entitlements, MRM, approvals, action broker, drift), the AI access
+spine, ACT (requirements/outcomes/explain/replay) and the transaction plane. When asked to check
+that "the new UI renders real values", first `git diff main...HEAD -- pulse/frontend/`; if it is
+empty, the honest answer is that there is no surface, and those features must be tested by API.
+There is also **no boarding UI** (nothing calls `POST /api/boarding/applications`), so "board the
+application" cannot be done through the console — Halcyon is boarded by the seed.
+
+## Testing the API-only spines
+
+Enum values are validated server-side and are easy to guess wrong; read them first rather than
+inventing them:
+
+- Requirement types come from `GET /api/requirements` → `catalogue` (e.g. `ubo_declaration`);
+  anything else is a 409 `unknown requirement type`.
+- Outcome labels must be one of `confirmed`, `false_positive`, `explained` (400 otherwise).
+- `POST /api/ai/context` scopes are entitlement scope patterns like `merchant.*`,
+  `screening.hits`, `graph.*` — **not** page names. Unknown scopes are silently returned under
+  `denied_scopes`, so a typo looks like an entitlement failure. Roles `risk_owner`, `second_line`,
+  `auditor`, `system` hold `*`, so use `service` (or an unknown role) to prove scope denial.
+
+**Every `/api/merchants/{id}/...` route keys on the *entity* id**, including `exposure`, which
+translates to the internal merchant id itself and returns `no merchant for entity {id}` (404) for a
+bare entity. Entity and merchant ids are offset, so an id that resolves under both names a
+different business — prove routing with a discriminating id (entity `3` Northwind is merchant `2`,
+while merchant `3` is Aurora Digital Goods) rather than one where the two happen to agree.
+
+Governed action flow (the only path to a consequential action):
+`POST /governance/approvals` → `POST /governance/approvals/{id}/decide` (distinct approver) →
+`POST /governance/actions` quoting `approval_request_id` → `POST /governance/actions/{token}/rollback`.
+Expected refusals: self-approval **403** (`EntitlementError`, note: *not* 409 like the agent-run
+path), unapproved dual-auth action **409**, double rollback **409**.
+
 ## Policy Q&A grounding
 
 `grounding_threshold` lives in `backend/app/config.py` (0.35). The retrieval score is the share of
@@ -92,3 +134,34 @@ for 4xx/5xx and remember the intentional four-eyes 409.
   releasing must return the ARP to e.g. `suggest`, not leave it on `shadow`.
 - Promotion readiness renders the API's top-level metrics (`reviewed_runs`, `agreement_rate`,
   `p95_latency_ms`, `success_criteria`); an empty block means the shapes drifted again.
+- Action rollback restores the merchant's **prior** lifecycle state, not a hardcoded `active`.
+  Test it on a merchant that is *not* active, or the assertion proves nothing: Halcyon
+  (entity 29 / merchant 17) seeds as `underwriting`, so restrict → rollback must return
+  `underwriting`. `prior_state` is now returned on the serialised action as well as persisted.
+- `GET /api/governance/drift` must return named features with numeric PSI (reading the wrong
+  feature-vector key yields `baseline_n: 0`). The seed boards five merchants 8-27 days ago, so
+  `recent_n: 5` and `merchant.chargeback_rate` / `merchant.volume_ratio` land in `material_shifts`;
+  `recent_n: 0` means the recent cohort stopped being recent or stopped being seeded.
+- `POST /api/governance/drift/sweep` demotes `monitoring-triage` (24 labelled outcomes, 70.83%
+  agreement) to `shadow` and leaves `boarding-triage` (95.45%) alone. It is idempotent at the
+  floor: a second sweep reports `breached: true` with `demoted_to: null`, no new tier-history
+  entry, and releasing the kill switch afterwards restores `shadow`, not the pre-demotion tier.
+  Promotion readiness reads *reviewed runs*, not labelled outcomes, so it shows 0.00% agreement
+  for the same ARP the sweep just demoted at 70.83% — not a bug, but do not treat the two numbers
+  as the same metric.
+
+## What seeded data cannot exercise (do not fake these)
+
+- Rollback-window expiry (24h) — needs clock manipulation.
+- Non-reversible action rollback refusal: non-reversible actions get **no** `rollback_token`, so
+  the "not reversible" branch is unreachable through the API.
+- `POST /platform/events/replay` reports `matched: N, redelivered: 0` even with `dry_run: false`,
+  because `_handled_event_ids` is an in-process set already populated by seeding. This is the
+  documented idempotency contract, not a bug — but it means the re-dispatch path is not actually
+  observed.
+- Peer cohorts skip merchants with no `Score` row, and the five recent-intake merchants are seeded
+  without one, so they are missing from cohorts until a monitoring sweep scores them. The sweep
+  also opens five `EXCESSIVE_CHARGEBACKS` cases (all five breach the 0.9% `M-CB-003` threshold) and
+  is what finally populates the cohort "Risk outliers" column.
+- `GET /governance/actions` reports `bypass_suspected: true` on a fresh seed: seed-terminated
+  Meridian (entity 1) has no brokered action accounting for its state. Expected, not a defect.
