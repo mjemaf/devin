@@ -1000,13 +1000,16 @@ def transaction_health(session: Session = Depends(get_session)) -> dict[str, Any
     return transactions.stream_health(session)
 
 
-@router.get("/merchants/{merchant_id}/exposure", tags=["transactions"])
+@router.get("/merchants/{entity_id}/exposure", tags=["transactions"])
 def merchant_exposure(
-    merchant_id: int, window_days: int = 30, session: Session = Depends(get_session)
+    entity_id: int, window_days: int = 30, session: Session = Depends(get_session)
 ) -> dict[str, Any]:
-    if session.get(Merchant, merchant_id) is None:
-        raise HTTPException(status_code=404, detail=f"unknown merchant {merchant_id}")
-    return transactions.exposure(session, merchant_id, window_days=window_days)
+    merchant = session.execute(
+        select(Merchant).where(Merchant.entity_id == entity_id)
+    ).scalars().first()
+    if merchant is None:
+        raise HTTPException(status_code=404, detail=f"no merchant for entity {entity_id}")
+    return transactions.exposure(session, merchant.id, window_days=window_days)
 
 
 # ------------------------------------------------------------------------------------------

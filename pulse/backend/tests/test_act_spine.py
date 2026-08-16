@@ -147,6 +147,24 @@ def test_disagreement_demotes_an_autonomy_tier_without_a_promotion_gate(session:
     assert arp.tier_history[-1]["drift_demotion"] is True
 
 
+def test_the_seeded_book_carries_a_recent_cohort_that_makes_drift_observable(
+    session: Session,
+) -> None:
+    """The fixture, not just the algorithm: a seed with no recent boardings cannot drift."""
+    drift = evaluation.feature_drift(session)
+    chargeback = next(
+        item for item in drift["features"] if item["feature"] == "merchant.chargeback_rate"
+    )
+    assert chargeback["recent_n"] >= 5
+    assert chargeback["recent_mean"] > chargeback["baseline_mean"]
+    assert "merchant.chargeback_rate" in drift["material_shifts"]
+
+    # Seeded disagreement is sized to breach the floor, so a sweep has something to demote.
+    triage = evaluation.drift_check(session, "monitoring-triage")
+    assert triage["sufficient_evidence"] and triage["breached"]
+    assert triage["demoted_to"] == "shadow"
+
+
 def test_every_recorded_decision_explains_and_replays_to_the_same_outcome(
     session: Session,
 ) -> None:
