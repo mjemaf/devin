@@ -237,6 +237,7 @@ def serialise(row: BrokeredAction) -> dict[str, Any]:
         "expires_at": row.expires_at,
         "rolled_back_by": row.rolled_back_by,
         "rolled_back_at": row.rolled_back_at,
+        "prior_state": row.prior_state,
         "created_at": row.created_at,
     }
 

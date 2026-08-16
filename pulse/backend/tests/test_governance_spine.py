@@ -176,6 +176,7 @@ def test_a_reversible_action_can_be_rolled_back_and_state_restored(session: Sess
     )
     assert rolled_back.state == "rolled_back"
     assert merchant.lifecycle_state == before
+    assert action_broker.serialise(rolled_back)["prior_state"] == before
 
 
 def test_only_a_validated_artefact_may_run(session: Session) -> None:
