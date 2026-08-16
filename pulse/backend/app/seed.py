@@ -26,11 +26,15 @@ from app.services import (
     arp_registry,
     audit,
     decisioning,
+    evaluation,
     events,
     knowledge,
     kyb,
+    model_registry,
     monitoring,
+    provenance,
     resolution,
+    transactions,
 )
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data" / "knowledge"
@@ -364,6 +368,7 @@ def seed_offboarded_history(session: Session) -> int:
         underwritten_business_model="supplements_subscription",
         lifecycle_state="terminated",
         monthly_volume=0.0,
+        declared_volume=140_000.0,
         chargeback_rate=0.024,
         credit_limit=150_000.0,
         boarded_at=utcnow() - dt.timedelta(days=1800),
@@ -403,7 +408,9 @@ def seed_portfolio(session: Session) -> list[dict[str, Any]]:
             )
             merchant.review_cadence_days = 365
         merchant.monthly_volume = float(post.get("monthly_volume") or 0.0)
+        merchant.declared_volume = float(application.get("expected_monthly_volume") or 0.0)
         merchant.chargeback_rate = float(post.get("chargeback_rate") or 0.0)
+        merchant.platform_mid = f"MID{merchant.id:06d}"
         session.flush()
         outcomes.append(
             {
@@ -464,6 +471,70 @@ def seed_drift_signals(session: Session) -> None:
         )
 
 
+# Authorisations per active merchant, with one deliberate cross-platform duplicate, so the
+# deduplication and aggregation in PLS-16 are exercised rather than merely described.
+TRANSACTION_COUNTRIES = ("GB", "DE", "NL", "FR", "US")
+
+
+def seed_transaction_stream(session: Session) -> dict[str, Any]:
+    merchants = session.execute(
+        select(Merchant).where(Merchant.lifecycle_state == "active")
+    ).scalars().all()
+    batch: list[dict[str, Any]] = []
+    for index, merchant in enumerate(merchants):
+        if merchant.platform_mid is None:
+            continue
+        daily = max(merchant.monthly_volume / 30.0, 100.0)
+        for day in range(6):
+            occurred = utcnow() - dt.timedelta(days=day, hours=index)
+            country = TRANSACTION_COUNTRIES[(index + day) % len(TRANSACTION_COUNTRIES)]
+            batch.append(
+                {
+                    "auth_id": f"AUTH-{merchant.id}-{day}",
+                    "mid": merchant.platform_mid,
+                    "amount": round(daily / 4.0, 2),
+                    "currency": "EUR" if merchant.region == "EU" else "GBP",
+                    "auth_time": occurred.isoformat(),
+                    "entry_mode": "ecommerce",
+                    "issuer_country": country,
+                    "mcc": merchant.mcc,
+                }
+            )
+        # The same authorisation re-reported: it must not double the merchant's exposure.
+        batch.append(
+            {
+                "auth_id": f"AUTH-{merchant.id}-0",
+                "mid": merchant.platform_mid,
+                "amount": round(daily / 4.0, 2),
+                "currency": "EUR",
+                "auth_time": utcnow().isoformat(),
+                "entry_mode": "ecommerce",
+                "issuer_country": "GB",
+                "mcc": merchant.mcc,
+            }
+        )
+    return transactions.ingest(session, batch=batch, source_platform="acquiring")
+
+
+def seed_experiment(session: Session) -> str:
+    experiment = evaluation.register_experiment(
+        session,
+        key="EXP-CB-THRESHOLD-001",
+        hypothesis=(
+            "Scoring chargeback velocity over a rolling 30-day window rather than a calendar month "
+            "raises agreement with analyst dispositions without increasing false positives."
+        ),
+        owner="model.risk@pulse.example",
+        scope="monitoring alerts, smb and mid segments",
+        control="merchant-risk-scorecard@2.0.0",
+        variant="merchant-risk-scorecard@2.1.0-rc1",
+        metric="analyst_agreement_rate",
+        guardrail_metric="false_positive_rate",
+        min_observations=40,
+    )
+    return experiment.key
+
+
 def run(*, reset: bool = False) -> dict[str, Any]:
     """Idempotent-enough seed: safe on an empty database, skipped if already populated."""
     create_all()
@@ -473,16 +544,24 @@ def run(*, reset: bool = False) -> dict[str, Any]:
         if session.execute(select(Entity)).scalars().first() is not None and not reset:
             return {"seeded": False, "reason": "database already populated"}
 
+        feeds = [feed.key for feed in provenance.install(session)]
+        artefacts = model_registry.install(session)
         documents = seed_knowledge(session)
         arps = arp_registry.install(session)
         monitors = [monitor.key for monitor in monitoring.install(session)]
         offboarded_entity_id = seed_offboarded_history(session)
         portfolio = seed_portfolio(session)
         seed_drift_signals(session)
+        stream = seed_transaction_stream(session)
+        experiment = seed_experiment(session)
         halcyon = decisioning.board(session, HALCYON_APPLICATION, actor="seed.underwriter")
 
         summary = {
             "seeded": True,
+            "source_feeds": feeds,
+            "model_artefacts": artefacts,
+            "transaction_stream": stream,
+            "experiment": experiment,
             "documents": documents,
             "arps": arps,
             "monitors": monitors,

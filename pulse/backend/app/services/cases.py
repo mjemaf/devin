@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import Alert, Case, CaseEvent, Entity, ScreeningHit, utcnow
-from app.services import audit
+from app.services import audit, events
 
 SLA_HOURS: dict[str, int] = {"critical": 4, "high": 24, "medium": 72, "low": 168}
 
@@ -62,7 +62,28 @@ def open_case(
         subject_id=case.id,
         payload={"entity_id": entity_id, "case_type": case_type, "severity": severity, "title": title},
     )
+    _publish_lifecycle(session, case, state="opened", actor=created_by)
     return case
+
+
+def _publish_lifecycle(session: Session, case: Case, *, state: str, actor: str) -> None:
+    events.publish(
+        session,
+        events.Event(
+            name=events.CASE_LIFECYCLE,
+            subject_type="case",
+            subject_id=case.id,
+            payload={
+                "case_id": case.id,
+                "state": state,
+                "entity_id": case.entity_id,
+                "case_type": case.case_type,
+                "severity": case.severity,
+                "actor": actor,
+                "resolution": case.resolution,
+            },
+        ),
+    )
 
 
 def add_event(
@@ -89,6 +110,7 @@ def assign(session: Session, case_id: int, *, assignee: str, actor: str) -> Case
         subject_id=case_id,
         payload={"assignee": assignee},
     )
+    _publish_lifecycle(session, case, state="assigned", actor=actor)
     return case
 
 
@@ -112,6 +134,7 @@ def close_case(
         subject_id=case_id,
         payload={"resolution": resolution, "note": note},
     )
+    _publish_lifecycle(session, case, state="closed", actor=actor)
     session.flush()
     return case
 

@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import Entity, SourceRecord
-from app.services import audit
+from app.services import audit, events
 
 _SUFFIXES = re.compile(
     r"\b(limited|ltd|plc|llc|inc|incorporated|corp|corporation|gmbh|se|bv|b\.v\.|nv|sarl|sa|ag|"
@@ -303,6 +303,23 @@ def resolve(
             "contributions": {k: round(v, 4) for k, v in contributions.items()},
             "created_entity": created,
         },
+    )
+    events.publish(
+        session,
+        events.Event(
+            name=events.ENTITY_RESOLVED,
+            subject_type="entity",
+            subject_id=chosen.id,
+            payload={
+                "entity_id": chosen.id,
+                "source_system": source_system,
+                "source_ref": source_ref,
+                "band": band,
+                "confidence": round(confidence, 4),
+                "method": method,
+                "created_entity": created,
+            },
+        ),
     )
 
     return ResolutionResult(

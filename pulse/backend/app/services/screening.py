@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Entity, OwnershipEdge, Relationship, ScreeningHit
 from app.providers import gateway
-from app.services import audit
+from app.services import audit, events
 from app.services.resolution import normalise_name
 
 LIST_SEVERITY: dict[str, str] = {
@@ -333,6 +333,24 @@ def _persist_hit(
     hit.trigger = trigger
     session.add(hit)
     session.flush()
+    if existing is None:
+        events.publish(
+            session,
+            events.Event(
+                name=events.SCREENING_HIT,
+                subject_type="screening_hit",
+                subject_id=hit.id,
+                payload={
+                    "entity_id": entity_id,
+                    "list_type": hit.list_type,
+                    "subject_entity_id": subject.id,
+                    "matched_name": hit.matched_name,
+                    "score": hit.score,
+                    "disposition": hit.disposition,
+                    "trigger": trigger,
+                },
+            ),
+        )
     return hit
 
 

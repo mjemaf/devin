@@ -6,10 +6,16 @@ This is the control plane the Agentic Oversight Framework asks for, implemented 
   criteria, permitted recommendations, autonomy tier, kill switch).
 * Access to data is enforced against the ARP's declared ``data_contract`` — a request outside scope
   raises, it does not silently proceed.
-* Promotion up the ladder (shadow → suggest → four_eyes → auto_bounded) is earned from measured
+* Promotion up the ladder (shadow → copilot → assisted-auto → bounded-auto) is earned from measured
   agreement with human outcomes, and can never exceed the ARP's ceiling or the materiality of the
   action.
 * Approval requires a second, different human; self-approval is rejected at the service layer.
+* When a caller is supplied, the run's effective data scope is the ARP data contract **intersected**
+  with that caller's entitlements (PLS-75) — never the union.
+
+The stored tier values (``suggest``, ``four_eyes``, ``auto_bounded``) remain the wire format for
+compatibility with persisted runs and existing clients; :data:`CANONICAL_TIER` gives the
+architecture's names and :func:`normalise_tier` accepts either spelling on input.
 """
 
 from __future__ import annotations
@@ -24,10 +30,24 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models import ARP, AgentRun, utcnow
-from app.services import audit, materiality
+from app.services import audit, entitlements, materiality
 
 TIERS = ("shadow", "suggest", "four_eyes", "auto_bounded")
 TIER_RANK = {tier: index for index, tier in enumerate(TIERS)}
+
+# Architecture naming for the same rungs.
+CANONICAL_TIER: dict[str, str] = {
+    "shadow": "shadow",
+    "suggest": "copilot",
+    "four_eyes": "assisted_auto",
+    "auto_bounded": "bounded_auto",
+}
+TIER_ALIAS: dict[str, str] = {
+    **{canonical: stored for stored, canonical in CANONICAL_TIER.items()},
+    **{stored: stored for stored in TIERS},
+    "assisted-auto": "four_eyes",
+    "bounded-auto": "auto_bounded",
+}
 
 # Outcomes that need a second, different human whoever proposed them — agent or analyst.
 DUAL_AUTHORISATION = frozenset(materiality.NEVER_AUTOMATED)
@@ -39,6 +59,21 @@ class GovernanceError(RuntimeError):
 
 class DataContractViolation(GovernanceError):
     pass
+
+
+def normalise_tier(tier: str) -> str:
+    """Accept either the canonical architecture name or the stored wire value."""
+    try:
+        return TIER_ALIAS[tier]
+    except KeyError:
+        raise GovernanceError(f"unknown autonomy tier {tier!r}") from None
+
+
+def ladder() -> list[dict[str, Any]]:
+    return [
+        {"rank": rank, "tier": tier, "canonical": CANONICAL_TIER[tier]}
+        for rank, tier in enumerate(TIERS)
+    ]
 
 
 @dataclass
@@ -65,8 +100,8 @@ def register_arp(
     autonomy_ceiling: str = "four_eyes",
     validated_by: str | None = None,
 ) -> ARP:
-    if autonomy_tier not in TIER_RANK or autonomy_ceiling not in TIER_RANK:
-        raise GovernanceError("unknown autonomy tier")
+    autonomy_tier = normalise_tier(autonomy_tier)
+    autonomy_ceiling = normalise_tier(autonomy_ceiling)
     if TIER_RANK[autonomy_tier] > TIER_RANK[autonomy_ceiling]:
         raise GovernanceError(f"tier {autonomy_tier} exceeds ceiling {autonomy_ceiling}")
 
@@ -134,6 +169,7 @@ def run(
     materiality_permitted_tier: str = "four_eyes",
     latency_ms: int = 0,
     requested_by: str = "system",
+    caller: entitlements.Caller | None = None,
 ) -> AgentRun:
     """Record an agent run under its ARP, at the effective autonomy tier.
 
@@ -148,9 +184,19 @@ def run(
             f"'{recommendation.action}' is not a permitted recommendation for {arp_key}"
         )
     enforce_data_contract(arp, data_accessed)
+    if caller is not None:
+        # PLS-75: a pathway may never widen the access of the caller that invoked it.
+        beyond_caller = [
+            scope for scope in data_accessed if not entitlements.permits(caller, scope)
+        ]
+        if beyond_caller:
+            raise DataContractViolation(
+                f"{caller.actor} ({caller.role}) is not entitled to "
+                f"{', '.join(sorted(beyond_caller))}; an ARP may not exceed its caller"
+            )
 
     effective_tier = min(
-        (arp.autonomy_tier, arp.autonomy_ceiling, materiality_permitted_tier),
+        (arp.autonomy_tier, arp.autonomy_ceiling, normalise_tier(materiality_permitted_tier)),
         key=lambda tier: TIER_RANK[tier],
     )
     status = {
@@ -344,6 +390,7 @@ def evaluate_arp(session: Session, arp_key: str) -> dict[str, Any]:
         "arp": arp.key,
         "version": arp.version,
         "autonomy_tier": arp.autonomy_tier,
+        "canonical_tier": CANONICAL_TIER[arp.autonomy_tier],
         "autonomy_ceiling": arp.autonomy_ceiling,
         "kill_switch_engaged": arp.kill_switch_engaged,
         "reviewed_runs": reviewed,
@@ -358,8 +405,7 @@ def evaluate_arp(session: Session, arp_key: str) -> dict[str, Any]:
 
 
 def set_tier(session: Session, arp_key: str, *, tier: str, actor: str, rationale: str) -> ARP:
-    if tier not in TIER_RANK:
-        raise GovernanceError(f"unknown tier {tier}")
+    tier = normalise_tier(tier)
     arp = get_arp(session, arp_key)
     if TIER_RANK[tier] > TIER_RANK[arp.autonomy_ceiling]:
         raise GovernanceError(f"tier {tier} exceeds the ARP ceiling {arp.autonomy_ceiling}")
@@ -446,6 +492,7 @@ def serialise_run(agent_run: AgentRun) -> dict[str, Any]:
         "entity_id": agent_run.entity_id,
         "case_id": agent_run.case_id,
         "mode": agent_run.mode,
+        "canonical_mode": CANONICAL_TIER.get(agent_run.mode, agent_run.mode),
         "recommendation": agent_run.recommendation,
         "confidence": agent_run.confidence,
         "rationale": agent_run.rationale,
