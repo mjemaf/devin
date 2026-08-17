@@ -1,0 +1,364 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BusinessType {
+  individual
+  company
+}
+
+enum MerchantStatus {
+  pending
+  under_review
+  approved
+  declined
+  suspended
+  active
+}
+
+enum StepStatus {
+  pending
+  in_progress
+  completed
+  failed
+}
+
+enum VerificationStatus {
+  pending
+  verified
+  failed
+}
+
+enum AccountType {
+  checking
+  savings
+}
+
+enum VerificationMethod {
+  instant
+  micro_deposits
+  document_upload
+  biometric
+  database_check
+}
+
+enum RiskLevel {
+  low
+  medium
+  high
+  prohibited
+}
+
+enum AssessmentType {
+  onboarding
+  ongoing
+}
+
+enum Decision {
+  approved
+  declined
+  manual_review
+}
+
+enum UnderwritingType {
+  automated
+  manual
+}
+
+enum WebhookDeliveryStatus {
+  pending
+  delivered
+  failed
+}
+
+model Partner {
+  id           String   @id @default(uuid()) @db.Uuid
+  publicId     String   @unique @map("public_id")
+  name         String
+  integration  String   @default("direct_api")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  apiKeys         ApiKey[]
+  merchants       Merchant[]
+  webhooks        Webhook[]
+  idempotencyKeys IdempotencyKey[]
+
+  @@map("partners")
+}
+
+model ApiKey {
+  id         String    @id @default(uuid()) @db.Uuid
+  partnerId  String    @map("partner_id") @db.Uuid
+  name       String
+  /// Display-only key fragment (e.g. sk_sandbox_); not unique on its own.
+  prefix     String
+  keyHash    String    @unique @map("key_hash")
+  role       String    @default("operator")
+  scopes     String[]  @default([])
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  partner Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+
+  @@index([partnerId])
+  @@map("api_keys")
+}
+
+model Merchant {
+  id               String         @id @default(uuid()) @db.Uuid
+  publicId         String         @unique @map("public_id")
+  partnerId        String         @map("partner_id") @db.Uuid
+  businessType     BusinessType   @map("business_type")
+  status           MerchantStatus @default(pending)
+  country          String         @db.Char(2)
+  businessProfile  Json           @map("business_profile")
+  contact          Json
+  address          Json?
+  compliance       Json
+  processingLimits Json?          @map("processing_limits")
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  partner              Partner                @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  owners               Owner[]
+  bankAccounts         BankAccount[]
+  documents            Document[]
+  steps                OnboardingStep[]
+  verificationAttempts VerificationAttempt[]
+  riskAssessments      RiskAssessment[]
+  underwritingDecision UnderwritingDecision[]
+  auditLogs            AuditLog[]
+
+  @@index([partnerId])
+  @@index([status])
+  @@map("merchants")
+}
+
+model OnboardingStep {
+  id          String     @id @default(uuid()) @db.Uuid
+  merchantId  String     @map("merchant_id") @db.Uuid
+  name        String
+  status      StepStatus @default(pending)
+  position    Int
+  requiredActions String[] @default([]) @map("required_actions")
+  completedAt DateTime?  @map("completed_at") @db.Timestamptz(6)
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, name])
+  @@map("onboarding_steps")
+}
+
+model Owner {
+  id                  String             @id @default(uuid()) @db.Uuid
+  publicId            String             @unique @map("public_id")
+  merchantId          String             @map("merchant_id") @db.Uuid
+  firstName           String             @map("first_name")
+  lastName            String             @map("last_name")
+  email               String
+  phone               String?
+  dateOfBirth         DateTime           @map("date_of_birth") @db.Date
+  address             Json
+  ownershipPercentage Decimal            @map("ownership_percentage") @db.Decimal(5, 2)
+  title               String?
+  taxIdLast4          String?            @map("tax_id_last4")
+  isControlPerson     Boolean            @default(false) @map("is_control_person")
+  verificationStatus  VerificationStatus @default(pending) @map("verification_status")
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant  Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  documents Document[]
+
+  @@index([merchantId])
+  @@map("owners")
+}
+
+model BankAccount {
+  id                  String              @id @default(uuid()) @db.Uuid
+  publicId            String              @unique @map("public_id")
+  merchantId          String              @map("merchant_id") @db.Uuid
+  accountNumberLast4  String              @map("account_number_last4") @db.VarChar(4)
+  accountNumberToken  String              @map("account_number_token")
+  routingNumber       String              @map("routing_number")
+  accountType         AccountType         @map("account_type")
+  currency            String              @db.Char(3)
+  accountHolderName   String              @map("account_holder_name")
+  verificationStatus  VerificationStatus  @default(pending) @map("verification_status")
+  verificationMethod  VerificationMethod? @map("verification_method")
+  microDepositAmounts Int[]               @default([]) @map("micro_deposit_amounts")
+  isDefault           Boolean             @default(false) @map("is_default")
+  createdAt           DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("bank_accounts")
+}
+
+model Document {
+  id                 String             @id @default(uuid()) @db.Uuid
+  publicId           String             @unique @map("public_id")
+  merchantId         String             @map("merchant_id") @db.Uuid
+  ownerId            String?            @map("owner_id") @db.Uuid
+  documentType       String             @map("document_type")
+  filePath           String             @map("file_path")
+  fileName           String             @map("file_name")
+  contentType        String             @map("content_type")
+  fileSize           Int                @map("file_size")
+  verificationStatus VerificationStatus @default(pending) @map("verification_status")
+  expiresAt          DateTime?          @map("expires_at") @db.Timestamptz(6)
+  metadata           Json?
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  owner    Owner?   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("documents")
+}
+
+model VerificationAttempt {
+  id               String             @id @default(uuid()) @db.Uuid
+  publicId         String             @unique @map("public_id")
+  merchantId       String             @map("merchant_id") @db.Uuid
+  verificationType String             @map("verification_type")
+  status           VerificationStatus
+  provider         String?
+  subjectId        String?            @map("subject_id")
+  requestData      Json?              @map("request_data")
+  responseData     Json?              @map("response_data")
+  errorMessage     String?            @map("error_message")
+  startedAt        DateTime           @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt      DateTime?          @map("completed_at") @db.Timestamptz(6)
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("verification_attempts")
+}
+
+model RiskAssessment {
+  id              String         @id @default(uuid()) @db.Uuid
+  publicId        String         @unique @map("public_id")
+  merchantId      String         @map("merchant_id") @db.Uuid
+  riskScore       Int            @map("risk_score")
+  riskLevel       RiskLevel      @map("risk_level")
+  factors         Json
+  recommendations Json?
+  assessmentType  AssessmentType @map("assessment_type")
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("risk_assessments")
+}
+
+model UnderwritingDecision {
+  id               String               @id @default(uuid()) @db.Uuid
+  publicId         String               @unique @map("public_id")
+  merchantId       String               @map("merchant_id") @db.Uuid
+  decision         Decision             @map("decision")
+  reason           String?
+  reasonCodes      String[]             @default([]) @map("reason_codes")
+  processingLimits Json?                @map("processing_limits")
+  pricingTier      String?              @map("pricing_tier")
+  underwritingType UnderwritingType     @map("underwriting_type")
+  riskAssessmentId String?              @map("risk_assessment_id") @db.Uuid
+  reviewedBy       String?              @map("reviewed_by")
+  reviewedAt       DateTime             @default(now()) @map("reviewed_at") @db.Timestamptz(6)
+  expiresAt        DateTime?            @map("expires_at") @db.Timestamptz(6)
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("underwriting_decisions")
+}
+
+model Webhook {
+  id        String   @id @default(uuid()) @db.Uuid
+  publicId  String   @unique @map("public_id")
+  partnerId String   @map("partner_id") @db.Uuid
+  url       String
+  events    String[]
+  secret    String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  partner    Partner           @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([partnerId])
+  @@map("webhooks")
+}
+
+model WebhookDelivery {
+  id           String                @id @default(uuid()) @db.Uuid
+  publicId     String                @unique @map("public_id")
+  webhookId    String                @map("webhook_id") @db.Uuid
+  eventId      String                @map("event_id")
+  eventType    String                @map("event_type")
+  payload      Json
+  status       WebhookDeliveryStatus @default(pending)
+  attempts     Int                   @default(0)
+  responseCode Int?                  @map("response_code")
+  error        String?
+  createdAt    DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  deliveredAt  DateTime?             @map("delivered_at") @db.Timestamptz(6)
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@map("webhook_deliveries")
+}
+
+model IdempotencyKey {
+  id           String   @id @default(uuid()) @db.Uuid
+  partnerId    String   @map("partner_id") @db.Uuid
+  key          String
+  method       String
+  path         String
+  requestHash  String   @map("request_hash")
+  statusCode   Int      @map("status_code")
+  responseBody Json     @map("response_body")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  partner Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+
+  @@unique([partnerId, key])
+  @@map("idempotency_keys")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid()) @db.Uuid
+  merchantId   String?  @map("merchant_id") @db.Uuid
+  actorId      String   @map("actor_id")
+  actorType    String   @map("actor_type")
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  changes      Json?
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  requestId    String?  @map("request_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  merchant Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
