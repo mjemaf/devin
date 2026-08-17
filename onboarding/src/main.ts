@@ -24,7 +24,8 @@ async function bootstrap(): Promise<void> {
         'merchant-scoped onboarding token.',
     )
     .setVersion('1.0')
-    .addBearerAuth({ type: 'http', scheme: 'bearer' })
+    .addBearerAuth({ type: 'http', scheme: 'bearer' }, 'bearer')
+    .addSecurityRequirements('bearer')
     .build();
   SwaggerModule.setup('docs', app, SwaggerModule.createDocument(app, swagger));
 
