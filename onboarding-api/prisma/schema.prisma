@@ -1,0 +1,314 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BusinessType {
+  individual
+  company
+}
+
+enum MerchantStatus {
+  pending
+  pending_verification
+  under_review
+  approved
+  declined
+  suspended
+  active
+}
+
+enum VerificationStatus {
+  pending
+  in_progress
+  verified
+  failed
+}
+
+enum AccountType {
+  checking
+  savings
+}
+
+enum VerificationMethod {
+  instant
+  micro_deposits
+  document_upload
+  biometric
+  database_check
+}
+
+enum RiskLevel {
+  low
+  medium
+  high
+  prohibited
+}
+
+enum UnderwritingDecisionType {
+  approved
+  declined
+  manual_review
+}
+
+enum ActorType {
+  partner
+  user
+  system
+}
+
+model Partner {
+  id        String   @id
+  name      String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  apiKeys   ApiKey[]
+  merchants Merchant[]
+  webhooks  Webhook[]
+
+  @@map("partners")
+}
+
+model ApiKey {
+  id         String    @id
+  partnerId  String    @map("partner_id")
+  name       String
+  keyHash    String    @unique @map("key_hash")
+  keyPrefix  String    @map("key_prefix")
+  scopes     String[]
+  role       String    @default("operator")
+  isActive   Boolean   @default(true) @map("is_active")
+  lastUsedAt DateTime? @map("last_used_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  partner Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+
+  @@index([partnerId])
+  @@map("api_keys")
+}
+
+model Merchant {
+  id               String         @id
+  partnerId        String         @map("partner_id")
+  businessType     BusinessType   @map("business_type")
+  status           MerchantStatus @default(pending)
+  country          String
+  businessProfile  Json           @map("business_profile")
+  contact          Json
+  address          Json?
+  compliance       Json
+  processingLimits Json?          @map("processing_limits")
+  onboardingSteps  Json           @map("onboarding_steps")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  partner               Partner                @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  owners                Owner[]
+  bankAccounts          BankAccount[]
+  documents             Document[]
+  verificationAttempts  VerificationAttempt[]
+  riskAssessments       RiskAssessment[]
+  underwritingDecisions UnderwritingDecision[]
+  auditLogs             AuditLog[]
+
+  @@index([partnerId])
+  @@index([status])
+  @@map("merchants")
+}
+
+model Owner {
+  id                  String             @id
+  merchantId          String             @map("merchant_id")
+  firstName           String             @map("first_name")
+  lastName            String             @map("last_name")
+  email               String
+  phone               String?
+  dateOfBirth         DateTime           @map("date_of_birth") @db.Date
+  address             Json
+  ownershipPercentage Decimal            @map("ownership_percentage") @db.Decimal(5, 2)
+  title               String?
+  taxIdLast4          String?            @map("tax_id_last4")
+  isControlPerson     Boolean            @default(false) @map("is_control_person")
+  verificationStatus  VerificationStatus @default(pending) @map("verification_status")
+  createdAt           DateTime           @default(now()) @map("created_at")
+  updatedAt           DateTime           @updatedAt @map("updated_at")
+
+  merchant  Merchant   @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  documents Document[]
+
+  @@index([merchantId])
+  @@map("owners")
+}
+
+model BankAccount {
+  id                  String              @id
+  merchantId          String              @map("merchant_id")
+  accountNumberLast4  String              @map("account_number_last4")
+  accountNumberToken  String              @map("account_number_token")
+  routingNumber       String              @map("routing_number")
+  accountType         AccountType         @map("account_type")
+  currency            String
+  accountHolderName   String              @map("account_holder_name")
+  verificationStatus  VerificationStatus  @default(pending) @map("verification_status")
+  verificationMethod  VerificationMethod? @map("verification_method")
+  microDepositAmounts Int[]               @map("micro_deposit_amounts")
+  isDefault           Boolean             @default(false) @map("is_default")
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("bank_accounts")
+}
+
+model Document {
+  id                 String             @id
+  merchantId         String             @map("merchant_id")
+  ownerId            String?            @map("owner_id")
+  documentType       String             @map("document_type")
+  filePath           String             @map("file_path")
+  fileName           String             @map("file_name")
+  contentType        String             @map("content_type")
+  fileSize           Int                @map("file_size")
+  verificationStatus VerificationStatus @default(pending) @map("verification_status")
+  expiresAt          DateTime?          @map("expires_at")
+  metadata           Json?
+  createdAt          DateTime           @default(now()) @map("created_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  owner    Owner?   @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("documents")
+}
+
+model VerificationAttempt {
+  id               String             @id
+  merchantId       String             @map("merchant_id")
+  subjectId        String?            @map("subject_id")
+  verificationType String             @map("verification_type")
+  status           VerificationStatus
+  provider         String?
+  requestData      Json?              @map("request_data")
+  responseData     Json?              @map("response_data")
+  errorMessage     String?            @map("error_message")
+  startedAt        DateTime           @default(now()) @map("started_at")
+  completedAt      DateTime?          @map("completed_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("verification_attempts")
+}
+
+model RiskAssessment {
+  id              String    @id
+  merchantId      String    @map("merchant_id")
+  riskScore       Int       @map("risk_score")
+  riskLevel       RiskLevel @map("risk_level")
+  factors         Json
+  recommendations Json?
+  assessmentType  String    @map("assessment_type")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("risk_assessments")
+}
+
+model UnderwritingDecision {
+  id               String                   @id
+  merchantId       String                   @map("merchant_id")
+  decision         UnderwritingDecisionType
+  reason           String?
+  reasonCodes      String[]                 @map("reason_codes")
+  processingLimits Json?                    @map("processing_limits")
+  pricingTier      String?                  @map("pricing_tier")
+  underwritingType String                   @map("underwriting_type")
+  riskAssessmentId String?                  @map("risk_assessment_id")
+  reviewedBy       String?                  @map("reviewed_by")
+  reviewedAt       DateTime                 @default(now()) @map("reviewed_at")
+  expiresAt        DateTime?                @map("expires_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("underwriting_decisions")
+}
+
+model Webhook {
+  id        String   @id
+  partnerId String   @map("partner_id")
+  url       String
+  events    String[]
+  secret    String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  partner    Partner           @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([partnerId])
+  @@map("webhooks")
+}
+
+model WebhookDelivery {
+  id           String    @id
+  webhookId    String    @map("webhook_id")
+  eventId      String    @map("event_id")
+  eventType    String    @map("event_type")
+  payload      Json
+  status       String
+  attempts     Int       @default(0)
+  responseCode Int?      @map("response_code")
+  errorMessage String?   @map("error_message")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  deliveredAt  DateTime? @map("delivered_at")
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@map("webhook_deliveries")
+}
+
+model AuditLog {
+  id           String    @id
+  merchantId   String?   @map("merchant_id")
+  actorId      String    @map("actor_id")
+  actorType    ActorType @map("actor_type")
+  action       String
+  resourceType String    @map("resource_type")
+  resourceId   String?   @map("resource_id")
+  changes      Json?
+  ipAddress    String?   @map("ip_address")
+  userAgent    String?   @map("user_agent")
+  requestId    String?   @map("request_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  merchant Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model IdempotencyKey {
+  key          String   @id
+  partnerId    String   @map("partner_id")
+  method       String
+  path         String
+  requestHash  String   @map("request_hash")
+  statusCode   Int      @map("status_code")
+  responseBody Json     @map("response_body")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("idempotency_keys")
+}
