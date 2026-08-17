@@ -56,7 +56,7 @@ method even if its scopes would otherwise allow it.
 | GET | `/merchants/{id}` | `merchants:read` | Full profile, onboarding state, compliance profile. |
 | PATCH | `/merchants/{id}` | `merchants:write` | Update contact, MCC, volume, products, address, locale. Repricing inputs recompute the PCI level. |
 | GET | `/merchants/{id}/status` | `merchants:read` | Steps, `outstanding_actions`, verification history, latest decision, `estimated_completion`. |
-| POST | `/merchants/{id}/business-verification` | `merchants:write` | Submit KYB details (legal name, tax id, registration number, address). |
+| POST | `/merchants/{id}/business-verification` | `merchants:write` | Submit KYB details: `legal_name`, `tax_id`, `registration_number`, `incorporation_date`, and the registered address as `business_address` (not `address`, which on `POST /merchants` is the operating address). |
 | POST/GET | `/merchants/{id}/owners` | `merchants:write` / `read` | Beneficial owners; combined ownership above 100% is rejected. |
 | POST/GET | `/merchants/{id}/bank-accounts` | `merchants:write` / `read` | Settlement accounts; only the last four digits are ever returned. |
 | POST/GET | `/merchants/{id}/documents` | `merchants:write` / `read` | Base64 uploads with type, filename, content type, optional expiry. |

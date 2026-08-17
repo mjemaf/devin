@@ -4,6 +4,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { ApiException } from '../src/common/errors/api.exception';
 import { PrismaService } from '../src/common/prisma/prisma.service';
+import { setupSwagger } from '../src/swagger';
 
 const ADMIN_KEY = process.env.ADMIN_API_KEY ?? 'admin_local_dev_key';
 const FULL_SCOPES = [
@@ -60,6 +61,7 @@ describe('Onboarding API (e2e)', () => {
           ),
       }),
     );
+    setupSwagger(app);
     await app.init();
     prisma = app.get(PrismaService);
 
@@ -463,6 +465,16 @@ describe('Onboarding API (e2e)', () => {
       const audit = await asPartner(api().get('/v1/analytics/audit-logs').query({ limit: 5 })).expect(200);
       expect(audit.body.data.length).toBeGreaterThan(0);
       expect(JSON.stringify(audit.body)).not.toContain('000123456789');
+    });
+
+    it('advertises both credential types on the published schema', async () => {
+      const doc = await api().get('/docs/openapi.json').expect(200);
+      expect(Object.keys(doc.body.components.securitySchemes).sort()).toEqual([
+        'ApiKey',
+        'OnboardingSession',
+      ]);
+      // Without a top-level requirement, Swagger UI's "Try it out" sends no credential.
+      expect(doc.body.security).toEqual([{ ApiKey: [] }, { OnboardingSession: [] }]);
     });
 
     it('serves health probes without credentials', async () => {

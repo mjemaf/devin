@@ -9,7 +9,8 @@ Server-to-server with a partner API key. You own the UI.
 
 1. `POST /v1/merchants` with entity type, country, contact, business name, MCC and
    projected volume. Send `Idempotency-Key`. Keep `required_steps` from the response.
-2. `POST /v1/merchants/{id}/business-verification` — KYB details.
+2. `POST /v1/merchants/{id}/business-verification` — KYB details; the registered address
+   goes in `business_address`, distinct from the operating `address` on the merchant.
 3. `POST /v1/merchants/{id}/owners` — beneficial owners (companies only; the threshold per
    country comes from `/v1/compliance/requirements`).
 4. `POST /v1/merchants/{id}/bank-accounts` — settlement account.
