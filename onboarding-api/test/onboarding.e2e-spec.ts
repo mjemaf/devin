@@ -171,9 +171,13 @@ describe('merchant onboarding (e2e)', () => {
       ]),
     );
     expect(JSON.stringify(audit.body)).not.toContain('123456789');
+    // Audit entries are correlated to the request that produced them.
+    expect(audit.body.data.every((entry: { request_id: string }) => /^req_/.test(entry.request_id))).toBe(
+      true,
+    );
   });
 
-  it('declines a sanctioned business and blocks underwriting', async () => {
+  it('declines a sanctioned business without waiting for onboarding to finish', async () => {
     const created = await write('/v1/merchants').send(merchantPayload).expect(201);
     const merchantId: string = created.body.id;
 
@@ -186,19 +190,11 @@ describe('merchant onboarding (e2e)', () => {
     expect(risk.body.risk_level).toBe('prohibited');
     expect(risk.body.recommendations).toEqual(['decline_application']);
 
-    // Automated underwriting refuses to run while steps are outstanding.
-    const blocked = await write('/v1/underwriting/submit')
+    // A screening hit decides immediately, without waiting for the remaining steps.
+    const underwriting = await write('/v1/underwriting/submit')
       .send({ merchant_id: merchantId })
-      .expect(409);
-    expect(blocked.body.error).toMatchObject({
-      type: 'conflict_error',
-      code: 'onboarding_incomplete',
-    });
-
-    const manual = await write('/v1/underwriting/submit')
-      .send({ merchant_id: merchantId, underwriting_type: 'manual' })
       .expect(201);
-    expect(manual.body).toMatchObject({
+    expect(underwriting.body).toMatchObject({
       decision: 'declined',
       reason_codes: ['sanctions_screening_hit'],
     });
@@ -228,10 +224,25 @@ describe('merchant onboarding (e2e)', () => {
     expect(pending.microDepositAmounts).toHaveLength(2);
 
     const wrong = await write('/v1/verify/bank-account/micro-deposits')
-      .send({ merchant_id: merchantId, bank_account_id: account.body.id, amounts: [100, 100] })
+      .send({
+        merchant_id: merchantId,
+        bank_account_id: account.body.id,
+        amounts: pending.microDepositAmounts.map((amount) => (amount % 99) + 1),
+      })
       .expect(400);
-    expect(wrong.body.error.code).toBe('invalid_request_parameter');
+    expect(wrong.body.error.code).toBe('micro_deposit_amounts_mismatch');
 
+    // A failed confirmation keeps the pending deposits usable...
+    const reVerify = await write('/v1/verify/bank-account')
+      .send({
+        merchant_id: merchantId,
+        bank_account_id: account.body.id,
+        verification_method: 'micro_deposits',
+      })
+      .expect(201);
+    expect(reVerify.body.status).toBe('in_progress');
+
+    // ...so the correct amounts still verify the account.
     const confirmed = await write('/v1/verify/bank-account/micro-deposits')
       .send({
         merchant_id: merchantId,

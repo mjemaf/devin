@@ -18,6 +18,10 @@ export interface AuthContext {
   role: Role;
   scopes: Scope[];
   credential: 'api_key' | 'jwt';
+  /** Request metadata carried through to the audit trail. */
+  requestId?: string;
+  ipAddress?: string;
+  userAgent?: string;
 }
 
 export interface AuthenticatedRequest extends Request {

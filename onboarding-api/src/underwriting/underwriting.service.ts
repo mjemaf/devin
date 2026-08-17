@@ -57,10 +57,21 @@ export class UnderwritingService {
       );
     }
 
+    const profile = merchant.businessProfile as unknown as BusinessProfileJson;
+    const [owners, bankAccounts, attempts] = await Promise.all([
+      this.prisma.owner.findMany({ where: { merchantId } }),
+      this.prisma.bankAccount.findMany({ where: { merchantId } }),
+      this.prisma.verificationAttempt.findMany({ where: { merchantId } }),
+    ]);
+    const sanctionsHit = attempts.some(
+      (attempt) => attempt.errorMessage === 'sanctions_screening_hit',
+    );
+
     const outstanding = pendingStepNames(this.merchantState.steps(merchant)).filter(
       (step) => step !== 'manual_compliance_review',
     );
-    if (underwritingType === 'automated' && outstanding.length > 0) {
+    // A screening hit is decided immediately: its onboarding steps can never complete.
+    if (underwritingType === 'automated' && !sanctionsHit && outstanding.length > 0) {
       throw ApiException.conflict(
         'onboarding_incomplete',
         `Complete the outstanding onboarding steps before automated underwriting: ${outstanding.join(', ')}`,
@@ -69,13 +80,6 @@ export class UnderwritingService {
 
     // Underwriting always decides against a risk assessment.
     const assessment = await this.risk.ensureAssessment(auth, merchantId);
-
-    const profile = merchant.businessProfile as unknown as BusinessProfileJson;
-    const [owners, bankAccounts, attempts] = await Promise.all([
-      this.prisma.owner.findMany({ where: { merchantId } }),
-      this.prisma.bankAccount.findMany({ where: { merchantId } }),
-      this.prisma.verificationAttempt.findMany({ where: { merchantId } }),
-    ]);
 
     const output = decideUnderwriting({
       riskScore: assessment.riskScore,
@@ -92,7 +96,7 @@ export class UnderwritingService {
       ownersVerified:
         owners.length > 0 &&
         owners.every((owner) => owner.verificationStatus === VerificationStatus.verified),
-      sanctionsHit: attempts.some((attempt) => attempt.errorMessage === 'sanctions_screening_hit'),
+      sanctionsHit,
       expedited,
     });
 

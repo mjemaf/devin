@@ -20,7 +20,12 @@ export class AuthGuard implements CanActivate {
     if (isPublic) return true;
 
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
-    request.auth = await this.resolveAuth(request);
+    request.auth = {
+      ...(await this.resolveAuth(request)),
+      requestId: request.requestId,
+      ipAddress: request.ip,
+      userAgent: request.headers['user-agent'],
+    };
 
     const required = this.reflector.getAllAndOverride<Scope[]>(REQUIRED_SCOPES, [
       context.getHandler(),

@@ -183,9 +183,10 @@ export class VerificationService {
       accountHolderName: account.accountHolderName,
       routingNumber: account.routingNumber,
       // The raw number is only in hand at creation time; afterwards only the token is
-      // retained, so structural validity is carried forward from the stored status.
+      // retained. Structural validation is a precondition of persistence, so a stored
+      // account is always structurally valid regardless of its verification status.
       accountNumber: rawAccountNumber,
-      preValidated: account.verificationStatus !== VerificationStatus.failed,
+      preValidated: true,
       format: region.bankAccountFormat,
       method,
     });
@@ -203,7 +204,9 @@ export class VerificationService {
         verificationStatus: STATUS_BY_PROVIDER_RESULT[result.status],
         verificationMethod:
           method === 'instant' ? VerificationMethod.instant : VerificationMethod.micro_deposits,
-        microDepositAmounts: microDeposits,
+        // A failed attempt leaves any outstanding micro-deposit confirmation usable.
+        microDepositAmounts:
+          result.status === 'failed' ? account.microDepositAmounts : microDeposits,
       },
     });
 

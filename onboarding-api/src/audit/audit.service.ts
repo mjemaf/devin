@@ -33,9 +33,9 @@ export class AuditService {
           resourceType: entry.resourceType,
           resourceId: entry.resourceId ?? null,
           changes: entry.changes,
-          requestId: entry.requestId ?? null,
-          ipAddress: entry.ipAddress ?? null,
-          userAgent: entry.userAgent ?? null,
+          requestId: entry.requestId ?? auth?.requestId ?? null,
+          ipAddress: entry.ipAddress ?? auth?.ipAddress ?? null,
+          userAgent: entry.userAgent ?? auth?.userAgent ?? null,
         },
       });
     } catch (error) {

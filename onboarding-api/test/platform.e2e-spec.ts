@@ -167,6 +167,27 @@ describe('platform concerns (e2e)', () => {
       });
     });
 
+    it('uses the envelope for framework-level failures too', async () => {
+      const missing = await api()
+        .get('/v1/no-such-route')
+        .set('X-API-Key', harness.partner.viewerKey)
+        .expect(404);
+      expect(missing.body.error).toMatchObject({
+        type: 'not_found_error',
+        code: 'resource_not_found',
+      });
+      expect(typeof missing.body.error.message).toBe('string');
+
+      const malformed = await api()
+        .post('/v1/merchants')
+        .set('X-API-Key', harness.partner.operatorKey)
+        .set('Content-Type', 'application/json')
+        .send('{"business_name":')
+        .expect(400);
+      expect(malformed.body.error).toMatchObject({ type: 'validation_error' });
+      expect(malformed.body.error.request_id).toMatch(/^req_/);
+    });
+
     it('rejects unknown properties', async () => {
       await write('/v1/merchants')
         .send({ ...merchantPayload, unexpected_field: true })

@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { newId } from '../ids';
 import { ApiErrorBody } from './api.exception';
 
 interface NestValidationBody {
@@ -23,7 +24,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
-    const requestId = (request.headers['x-request-id'] as string | undefined) ?? 'req_unknown';
+    // Body-parser failures short-circuit before RequestIdMiddleware, so mint an id here.
+    const requestId = (request.headers['x-request-id'] as string | undefined) ?? newId('request');
 
     const { status, error } = this.normalise(exception);
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
@@ -38,8 +40,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       const status = exception.getStatus();
       const body = exception.getResponse();
 
-      if (typeof body === 'object' && body !== null && 'error' in body) {
-        return { status, error: (body as { error: ApiErrorBody }).error };
+      // Our own exceptions carry the envelope; Nest's built-ins put a status phrase in `error`.
+      const envelope = (body as { error?: unknown } | null)?.error;
+      if (typeof body === 'object' && typeof envelope === 'object' && envelope !== null) {
+        return { status, error: envelope as ApiErrorBody };
       }
 
       const validation = (typeof body === 'object' ? body : {}) as NestValidationBody;
