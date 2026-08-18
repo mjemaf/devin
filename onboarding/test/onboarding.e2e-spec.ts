@@ -258,7 +258,9 @@ describe('Onboarding API (e2e)', () => {
         .expect(201);
       const bankAccountId: string = bank.body.id;
       expect(bank.body.account_number_last4).toBe('6789');
+      expect(bank.body.routing_number_last4).toBe('0248');
       expect(JSON.stringify(bank.body)).not.toContain('000123456789');
+      expect(JSON.stringify(bank.body)).not.toContain('121000248');
 
       const business = await asPartner(api().post('/v1/verify/business'))
         .send({ merchant_id: merchantId })

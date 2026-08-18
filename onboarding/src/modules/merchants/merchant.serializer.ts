@@ -57,7 +57,9 @@ export function serializeBankAccount(account: BankAccount) {
   return {
     id: account.reference,
     account_number_last4: account.accountNumberLast4,
-    routing_number: account.routingNumber,
+    // Bank identifiers are masked like the account number; the full value stays internal
+    // and is only passed to verification providers.
+    routing_number_last4: account.routingNumber.replace(/\W/g, '').slice(-4),
     account_type: account.accountType,
     currency: account.currency,
     country: account.country,

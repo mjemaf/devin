@@ -44,7 +44,8 @@ Manager.
 - **Data minimisation** — intake asks for the minimum; national identifiers are accepted
   only as the last four digits, tax identifiers are stored masked with a last-four, and
   full bank account numbers are AES-256-GCM tokenised with only the last four in plain
-  columns. Raw identifiers are used transiently for a provider call and never persisted.
+  columns. Bank identifiers (routing number, sort code, IBAN) are likewise returned only
+  as a last-four. Raw identifiers are used transiently for a provider call and never persisted.
 - **Purpose limitation** — audit logs record masked identifiers, actor, action, resource
   and request id, never sensitive values, and API responses never return secrets or full
   account numbers.
