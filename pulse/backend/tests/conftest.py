@@ -47,3 +47,14 @@ def session() -> Iterator[Session]:
 def client() -> Iterator[TestClient]:
     with TestClient(app) as test_client:
         yield test_client
+
+
+# X-API-Key headers for the demo credential directory (app.config.Settings.api_credentials),
+# one per role, so tests can exercise governance endpoints as a specific authenticated identity
+# instead of asserting identity/role in the request body.
+ANALYST = {"X-API-Key": "demo-analyst-key"}
+SENIOR_ANALYST = {"X-API-Key": "demo-senior-analyst-key"}
+CREDIT_OFFICER = {"X-API-Key": "demo-credit-officer-key"}
+RISK_OWNER = {"X-API-Key": "demo-risk-owner-key"}
+SECOND_LINE = {"X-API-Key": "demo-second-line-key"}
+AUDITOR = {"X-API-Key": "demo-auditor-key"}

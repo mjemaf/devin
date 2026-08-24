@@ -64,6 +64,19 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
+    # Bearer credential (X-API-Key) -> "actor|role". Governance-critical endpoints (four-eyes
+    # approval, the action broker, agent oversight) resolve the caller's actor and role from this
+    # directory rather than trusting client-supplied identity fields. This is a demo directory;
+    # any real deployment MUST override it via PULSE_API_CREDENTIALS with credentials it controls.
+    api_credentials: dict[str, str] = {
+        "demo-analyst-key": "analyst@pulse.example|analyst",
+        "demo-senior-analyst-key": "senior.analyst@pulse.example|senior_analyst",
+        "demo-credit-officer-key": "credit.officer@pulse.example|credit_officer",
+        "demo-risk-owner-key": "risk.owner@pulse.example|risk_owner",
+        "demo-second-line-key": "second.line@pulse.example|second_line",
+        "demo-auditor-key": "auditor@pulse.example|auditor",
+    }
+
     data_dir: Path = REPO_DIR / "data"
     policy_dir: Path = BACKEND_DIR / "app" / "policies"
     residency_region: str = "global"

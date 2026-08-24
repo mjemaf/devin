@@ -67,6 +67,7 @@ from app.services import (
     agents,
     ai_gateway,
     audit,
+    auth,
     cases,
     components,
     context_assembly,
@@ -91,6 +92,18 @@ from app.services import (
     screening,
     transactions,
 )
+
+# Roles permitted to touch an ARP's autonomy tier or kill switch. Mirrors the approvers of
+# record in entitlements.APPROVAL_RIGHTS for governance-class decisions.
+_AUTONOMY_CONTROL_ROLES = frozenset({"risk_owner", "second_line"})
+
+
+def _require_autonomy_control(principal: auth.Principal) -> None:
+    if principal.role not in _AUTONOMY_CONTROL_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"role '{principal.role}' may not change agent autonomy controls",
+        )
 
 router = APIRouter()
 
@@ -462,11 +475,14 @@ def ingest_document(body: DocumentIn, session: Session = Depends(get_session)) -
 
 @router.post("/knowledge/documents/{key}/approve", tags=["knowledge"])
 def approve_document(
-    key: str, body: ApproveDocumentIn, session: Session = Depends(get_session)
+    key: str,
+    body: ApproveDocumentIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
 ) -> dict[str, Any]:
     try:
         version = knowledge.approve_version(
-            session, document_key=key, version=body.version, actor=body.actor
+            session, document_key=key, version=body.version, actor=principal.actor
         )
     except Exception as exc:
         raise _handled(exc) from exc
@@ -744,9 +760,17 @@ def evaluate_arp(key: str, session: Session = Depends(get_session)) -> dict[str,
 
 
 @router.post("/agents/arps/{key}/tier", tags=["agents"])
-def set_tier(key: str, body: TierIn, session: Session = Depends(get_session)) -> dict[str, Any]:
+def set_tier(
+    key: str,
+    body: TierIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
+) -> dict[str, Any]:
+    _require_autonomy_control(principal)
     try:
-        arp = agents.set_tier(session, key, tier=body.tier, actor=body.actor, rationale=body.rationale)
+        arp = agents.set_tier(
+            session, key, tier=body.tier, actor=principal.actor, rationale=body.rationale
+        )
     except Exception as exc:
         raise _handled(exc) from exc
     return _serialise_arp(arp)
@@ -754,11 +778,15 @@ def set_tier(key: str, body: TierIn, session: Session = Depends(get_session)) ->
 
 @router.post("/agents/arps/{key}/kill-switch", tags=["agents"])
 def kill_switch(
-    key: str, body: KillSwitchIn, session: Session = Depends(get_session)
+    key: str,
+    body: KillSwitchIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
 ) -> dict[str, Any]:
+    _require_autonomy_control(principal)
     try:
         arp = agents.set_kill_switch(
-            session, key, engaged=body.engaged, actor=body.actor, reason=body.reason
+            session, key, engaged=body.engaged, actor=principal.actor, reason=body.reason
         )
     except Exception as exc:
         raise _handled(exc) from exc
@@ -774,11 +802,14 @@ def agent_runs(
 
 @router.post("/agents/runs/{run_id}/review", tags=["agents"])
 def review_run(
-    run_id: int, body: AgentReviewIn, session: Session = Depends(get_session)
+    run_id: int,
+    body: AgentReviewIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
 ) -> dict[str, Any]:
     try:
         agent_run = agents.review(
-            session, run_id, reviewer=body.reviewer, outcome=body.outcome, note=body.note
+            session, run_id, reviewer=principal.actor, outcome=body.outcome, note=body.note
         )
     except Exception as exc:
         raise _handled(exc) from exc
@@ -787,10 +818,13 @@ def review_run(
 
 @router.post("/agents/runs/{run_id}/approve", tags=["agents"])
 def approve_run(
-    run_id: int, body: AgentApproveIn, session: Session = Depends(get_session)
+    run_id: int,
+    body: AgentApproveIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
 ) -> dict[str, Any]:
     try:
-        agent_run = agents.approve(session, run_id, approver=body.approver, note=body.note)
+        agent_run = agents.approve(session, run_id, approver=principal.actor, note=body.note)
     except Exception as exc:
         raise _handled(exc) from exc
     return agents.serialise_run(agent_run)
@@ -1036,7 +1070,9 @@ def pending_approvals(
 
 @router.post("/governance/approvals", tags=["governance"])
 def request_approval(
-    body: ApprovalRequestIn, session: Session = Depends(get_session)
+    body: ApprovalRequestIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
 ) -> dict[str, Any]:
     try:
         row = four_eyes.request(
@@ -1045,8 +1081,8 @@ def request_approval(
             subject_id=body.subject_id,
             decision_class=body.decision_class,
             action=body.action,
-            proposer=body.proposer,
-            proposer_role=body.proposer_role,
+            proposer=principal.actor,
+            proposer_role=principal.role,
             severity=body.severity,
             required_role=body.required_role,
             payload={str(key): value for key, value in body.payload.items()},
@@ -1058,14 +1094,17 @@ def request_approval(
 
 @router.post("/governance/approvals/{request_id}/decide", tags=["governance"])
 def decide_approval(
-    request_id: int, body: ApprovalDecisionIn, session: Session = Depends(get_session)
+    request_id: int,
+    body: ApprovalDecisionIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
 ) -> dict[str, Any]:
     try:
         row = four_eyes.decide(
             session,
             request_id,
-            approver=body.approver,
-            approver_role=body.approver_role,
+            approver=principal.actor,
+            approver_role=principal.role,
             approve=body.approve,
             rationale=body.rationale,
         )
@@ -1085,7 +1124,9 @@ def action_ledger(limit: int = 100, session: Session = Depends(get_session)) -> 
 
 @router.post("/governance/actions", tags=["governance"])
 def execute_action(
-    body: BrokeredActionIn, session: Session = Depends(get_session)
+    body: BrokeredActionIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
 ) -> dict[str, Any]:
     """Every consequential action leaves through here — including an agent's."""
     try:
@@ -1093,8 +1134,8 @@ def execute_action(
             session,
             action_type=body.action_type,
             entity_id=body.entity_id,
-            actor=body.actor,
-            actor_role=body.actor_role,
+            actor=principal.actor,
+            actor_role=principal.role,
             actor_type=body.actor_type,
             authority_basis=body.authority_basis,
             rule_ref=body.rule_ref,
@@ -1110,11 +1151,14 @@ def execute_action(
 
 @router.post("/governance/actions/{rollback_token}/rollback", tags=["governance"])
 def rollback_action(
-    rollback_token: str, body: ActionRollbackIn, session: Session = Depends(get_session)
+    rollback_token: str,
+    body: ActionRollbackIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
 ) -> dict[str, Any]:
     try:
         row = action_broker.rollback(
-            session, rollback_token=rollback_token, actor=body.actor, reason=body.reason
+            session, rollback_token=rollback_token, actor=principal.actor, reason=body.reason
         )
     except Exception as exc:
         raise _handled(exc) from exc
@@ -1294,16 +1338,18 @@ def ai_invocations(limit: int = 100, session: Session = Depends(get_session)) ->
 
 @router.post("/ai/context", tags=["ai"])
 def assemble_context(
-    body: ContextRequestIn, session: Session = Depends(get_session)
+    body: ContextRequestIn,
+    session: Session = Depends(get_session),
+    principal: auth.Principal = Depends(auth.require_principal),
 ) -> dict[str, Any]:
     """What an agent would actually be given: the intersection of ARP scope and caller rights."""
     if session.get(Entity, body.entity_id) is None:
         raise HTTPException(status_code=404, detail=f"unknown entity {body.entity_id}")
     caller = entitlements.Caller(
-        actor=body.actor,
-        role=body.role,
+        actor=principal.actor,
+        role=principal.role,
         regions=tuple(body.regions),
-        max_classification=body.max_classification,
+        max_classification=entitlements.ROLE_MAX_CLASSIFICATION.get(principal.role, "internal"),
     )
     try:
         manifest = context_assembly.assemble(

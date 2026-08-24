@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib
 
+from conftest import ANALYST, AUDITOR, SECOND_LINE
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -145,16 +146,16 @@ def test_four_eyes_and_broker_refusals_surface_as_conflicts_not_500s(client: Tes
             "action": "restrict",
             "payload": {"reason": "ownership unresolved"},
         },
+        headers=ANALYST,
     ).json()
 
+    # A caller cannot approve its own request by asserting a different (privileged) role in the
+    # body — approver identity and role now come from the authenticated credential, so using the
+    # same credential as the proposer is a genuine four-eyes breach, not a role claim to police.
     self_approval = client.post(
         f"/api/governance/approvals/{request['id']}/decide",
-        json={
-            "approve": True,
-            "rationale": "approving my own request",
-            "approver": "analyst@pulse.example",
-            "approver_role": "second_line",
-        },
+        json={"approve": True, "rationale": "approving my own request"},
+        headers=ANALYST,
     )
     assert self_approval.status_code == 403
 
@@ -164,9 +165,9 @@ def test_four_eyes_and_broker_refusals_surface_as_conflicts_not_500s(client: Tes
             "action_type": "terminate",
             "entity_id": entity_id,
             "authority_basis": "rule:MON-004",
-            "actor": "arp:monitoring-triage",
             "actor_type": "agent",
         },
+        headers=ANALYST,
     )
     assert unapproved.status_code == 409
 
@@ -176,9 +177,62 @@ def test_four_eyes_and_broker_refusals_surface_as_conflicts_not_500s(client: Tes
             "approve": True,
             "rationale": "ownership unresolved and volume rising; restriction proportionate",
         },
+        headers=SECOND_LINE,
     )
     assert approved.status_code == 200
     assert approved.json()["state"] == "approved"
+
+
+def test_approval_role_cannot_be_self_asserted_in_the_request_body(client: TestClient) -> None:
+    """Regression: approver identity/role used to come straight from the JSON body, so any
+    caller could claim ``approver_role: "risk_owner"`` and approve its own governed action.
+    Those fields no longer exist on the schema — only the authenticated credential's role can
+    grant approval rights.
+    """
+    entity_id = client.get("/api/merchants").json()[0]["entity_id"]
+
+    request = client.post(
+        "/api/governance/approvals",
+        json={
+            "subject_type": "entity",
+            "subject_id": entity_id,
+            "decision_class": "monitoring_action",
+            "action": "restrict",
+            "payload": {"reason": "ownership unresolved"},
+        },
+        headers=ANALYST,
+    ).json()
+
+    forged = client.post(
+        f"/api/governance/approvals/{request['id']}/decide",
+        json={
+            "approve": True,
+            "rationale": "self-service approval",
+            "approver": "attacker@evil.example",
+            "approver_role": "risk_owner",
+        },
+        headers=AUDITOR,
+    )
+    assert forged.status_code == 409
+    assert "may not approve" in forged.json()["detail"]
+
+
+def test_governance_endpoints_require_a_verified_credential(client: TestClient) -> None:
+    entity_id = client.get("/api/merchants").json()[0]["entity_id"]
+    body = {
+        "subject_type": "entity",
+        "subject_id": entity_id,
+        "decision_class": "monitoring_action",
+        "action": "restrict",
+    }
+
+    assert client.post("/api/governance/approvals", json=body).status_code == 401
+    assert (
+        client.post(
+            "/api/governance/approvals", json=body, headers={"X-API-Key": "not-a-real-key"}
+        ).status_code
+        == 401
+    )
 
 
 def test_decision_explanation_replay_and_attestation(client: TestClient) -> None:
@@ -257,11 +311,8 @@ def test_ai_gateway_surfaces_report_spend_and_assemble_context(client: TestClien
     entity_id = client.get("/api/merchants").json()[0]["entity_id"]
     context = client.post(
         "/api/ai/context",
-        json={
-            "entity_id": entity_id,
-            "scopes": ["facts.registry.status", "credit.file"],
-            "role": "analyst",
-        },
+        json={"entity_id": entity_id, "scopes": ["facts.registry.status", "credit.file"]},
+        headers=ANALYST,
     ).json()
     assert "credit.file" in context["denied_scopes"]
     assert context["granted_scopes"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from conftest import ANALYST, RISK_OWNER, SECOND_LINE
 from fastapi.testclient import TestClient
 
 
@@ -197,22 +198,19 @@ def test_agent_queue_hides_shadow_runs_and_enforces_four_eyes(client: TestClient
     )
     reviewed = client.post(
         f"/api/agents/runs/{run_id}/review",
-        json={
-            "reviewer": "analyst@pulse.example",
-            "outcome": "decline",
-            "note": "Registry dissolved; decline confirmed",
-        },
+        json={"outcome": "decline", "note": "Registry dissolved; decline confirmed"},
+        headers=ANALYST,
     )
     assert reviewed.status_code == 200
     assert reviewed.json()["status"] == "pending_approval"
 
     same_person = client.post(
-        f"/api/agents/runs/{run_id}/approve", json={"approver": "analyst@pulse.example"}
+        f"/api/agents/runs/{run_id}/approve", json={}, headers=ANALYST
     )
     assert same_person.status_code == 409
 
     approved = client.post(
-        f"/api/agents/runs/{run_id}/approve", json={"approver": "second.line@pulse.example"}
+        f"/api/agents/runs/{run_id}/approve", json={}, headers=SECOND_LINE
     )
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
@@ -226,16 +224,25 @@ def test_arp_evaluation_reports_promotion_blockers(client: TestClient) -> None:
 
 
 def test_kill_switch_can_be_engaged_and_released(client: TestClient) -> None:
+    denied = client.post(
+        "/api/agents/arps/policy-qa/kill-switch",
+        json={"engaged": True, "reason": "eval regression"},
+        headers=ANALYST,
+    )
+    assert denied.status_code == 403
+
     engaged = client.post(
         "/api/agents/arps/policy-qa/kill-switch",
-        json={"engaged": True, "actor": "risk.owner@pulse.example", "reason": "eval regression"},
+        json={"engaged": True, "reason": "eval regression"},
+        headers=RISK_OWNER,
     ).json()
     assert engaged["kill_switch_engaged"] is True
     assert engaged["autonomy_tier"] == "shadow"
 
     released = client.post(
         "/api/agents/arps/policy-qa/kill-switch",
-        json={"engaged": False, "actor": "risk.owner@pulse.example", "reason": "fix verified"},
+        json={"engaged": False, "reason": "fix verified"},
+        headers=RISK_OWNER,
     ).json()
     assert released["kill_switch_engaged"] is False
 
