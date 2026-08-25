@@ -52,7 +52,7 @@ class DocumentIn(BaseModel):
 
 class ApproveDocumentIn(BaseModel):
     version: int
-    actor: str = "policy.owner@pulse.example"
+    # actor comes from the authenticated caller, not the request body — see app.services.auth.
 
 
 class FeedbackIn(BaseModel):
@@ -90,24 +90,24 @@ class CaseNoteIn(BaseModel):
 class AgentReviewIn(BaseModel):
     outcome: str
     note: str | None = None
-    reviewer: str = "analyst@pulse.example"
+    # reviewer comes from the authenticated caller, not the request body — see app.services.auth.
 
 
 class AgentApproveIn(BaseModel):
     note: str | None = None
-    approver: str = "supervisor@pulse.example"
+    # approver comes from the authenticated caller, not the request body — see app.services.auth.
 
 
 class TierIn(BaseModel):
     tier: str
     rationale: str
-    actor: str = "risk.owner@pulse.example"
+    # actor comes from the authenticated caller, not the request body — see app.services.auth.
 
 
 class KillSwitchIn(BaseModel):
     engaged: bool
     reason: str
-    actor: str = "risk.owner@pulse.example"
+    # actor comes from the authenticated caller, not the request body — see app.services.auth.
 
 
 class ListUpdateIn(BaseModel):
@@ -171,15 +171,17 @@ class ApprovalRequestIn(BaseModel):
     severity: str = "medium"
     required_role: str = "second_line"
     payload: dict[str, object] = Field(default_factory=dict)
-    proposer: str = "analyst@pulse.example"
-    proposer_role: str = "analyst"
+    # proposer / proposer_role are NOT client-supplied: identity and role come from the
+    # authenticated caller (see app.services.auth) so a request cannot assert an identity it
+    # was not issued.
 
 
 class ApprovalDecisionIn(BaseModel):
     approve: bool
     rationale: str
-    approver: str = "supervisor@pulse.example"
-    approver_role: str = "second_line"
+    # approver / approver_role come from the authenticated caller, not the request body — see
+    # app.services.auth. Trusting client-supplied values here let any caller self-assert a role
+    # (e.g. "risk_owner") and approve its own request.
 
 
 class BrokeredActionIn(BaseModel):
@@ -191,14 +193,14 @@ class BrokeredActionIn(BaseModel):
     rule_version: str | None = None
     approval_request_id: int | None = None
     evidence: dict[str, object] = Field(default_factory=dict)
-    actor: str = "analyst@pulse.example"
-    actor_role: str = "analyst"
     actor_type: str = "human"
+    # actor / actor_role come from the authenticated caller, not the request body — see
+    # app.services.auth.
 
 
 class ActionRollbackIn(BaseModel):
     reason: str
-    actor: str = "analyst@pulse.example"
+    # actor comes from the authenticated caller, not the request body — see app.services.auth.
 
 
 class OutcomeLabelIn(BaseModel):
@@ -226,7 +228,7 @@ class TransactionBatchIn(BaseModel):
 class ContextRequestIn(BaseModel):
     entity_id: int
     scopes: list[str] = Field(default_factory=list)
-    actor: str = "analyst@pulse.example"
-    role: str = "analyst"
     regions: list[str] = Field(default_factory=lambda: ["global"])
-    max_classification: str = "confidential"
+    # actor, role and max_classification come from the authenticated caller, not the request
+    # body — see app.services.auth. Trusting client-supplied values here let any caller
+    # self-assert e.g. role="risk_owner" and read another entity's restricted/confidential facts.

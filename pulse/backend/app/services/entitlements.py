@@ -75,6 +75,20 @@ NON_APPROVING_ROLES: frozenset[str] = frozenset({"analyst", "auditor", "system",
 
 CLASSIFICATION_RANK: dict[str, int] = {"public": 0, "internal": 1, "confidential": 2, "restricted": 3}
 
+# The classification ceiling a role is issued, independent of anything a caller might claim about
+# itself. context_assembly derives Caller.max_classification from this rather than trusting a
+# client-supplied value, since that value directly gates access to confidential/restricted facts.
+ROLE_MAX_CLASSIFICATION: dict[str, str] = {
+    "analyst": "internal",
+    "senior_analyst": "confidential",
+    "credit_officer": "confidential",
+    "risk_owner": "restricted",
+    "second_line": "restricted",
+    "auditor": "restricted",
+    "system": "restricted",
+    "service": "internal",
+}
+
 
 class EntitlementError(PermissionError):
     """A read or approval that the caller's entitlements do not permit."""
