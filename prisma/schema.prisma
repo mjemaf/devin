@@ -1,0 +1,562 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Organization hierarchy with ltree for tenancy isolation
+model Organization {
+  id                String   @id @default(cuid()) @db.Text
+  parentId           String?  @map("parent_id") @db.Text
+  path               String   @db.Text
+  depth              Int      @default(0) @map("depth") @db.SmallInt
+  name               String   @db.Text
+  legalName          String?  @map("legal_name") @db.Text
+  externalId         String?  @map("external_id") @db.Text
+  status             String   @default("pending") @map("status") @db.Text
+  residency          String   @map("residency") @db.Text
+  program            Json     @db.JsonB
+  supportedCountries String[] @default([]) @map("supported_countries")
+  defaultCurrency    String?  @map("default_currency") @db.Char(3)
+  contact            Json     @db.JsonB
+  metadata           Json     @default("{}") @db.JsonB
+  version            Int      @default(1) @db.SmallInt
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  parent             Organization?            @relation("OrganizationHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children           Organization[]            @relation("OrganizationHierarchy")
+  merchants          Merchant[]
+  apiKeys            ApiKey[]
+  webhookEndpoints   WebhookEndpoint[]
+
+  @@unique([parentId, externalId])
+  @@index([path(using: gist)])
+  @@index([program(using: gin)])
+  @@map("organizations")
+}
+
+// Merchant entity with proper hierarchy
+model Merchant {
+  id                   String   @id @default(cuid()) @db.Text
+  organizationId       String   @map("organization_id") @db.Text
+  organizationPath     String   @map("organization_path") @db.Text
+  parentMerchantId      String?  @map("parent_merchant_id") @db.Text
+  externalId            String?  @map("external_id") @db.Text
+  status                String   @default("draft") @db.Text
+  businessProfile       Json     @map("business_profile") @db.JsonB
+  contact               Json     @db.JsonB
+  address               Json     @db.JsonB
+  compliance            Json     @db.JsonB
+  processingLimits     Json?    @map("processing_limits") @db.JsonB
+  version               Int      @default(1) @db.SmallInt
+  riskProfile           RiskProfile?
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  parentMerchant        Merchant?  @relation("MerchantHierarchy", fields: [parentMerchantId], references: [id], onDelete: Cascade)
+  subMerchants          Merchant[] @relation("MerchantHierarchy")
+  persons               Person[]
+  bankAccounts          BankAccount[]
+  documents             Document[]
+  verifications          Verification[]
+  riskAssessments       RiskAssessment[]
+  underwritingDecisions UnderwritingDecision[]
+  productEnablings      ProductEnablement[]
+  pricingAssignments    PricingAssignment[]
+  payoutConfigurations  PayoutConfiguration[]
+  merchantAmendments   MerchantAmendment[]
+  applications          Application[]
+  auditLogs            AuditLog[]
+
+  @@index([organizationId])
+  @@index([organizationPath(using: gist)])
+  @@index([parentMerchantId])
+  @@map("merchants")
+}
+
+// Person (beneficial owners with KYC)
+model Person {
+  id                   String   @id @default(cuid()) @db.Text
+  merchantId            String   @map("merchant_id") @db.Text
+  firstName             String   @map("first_name") @db.VarChar(100)
+  lastName              String   @map("last_name") @db.VarChar(100)
+  email                 String   @db.VarChar(255)
+  phone                 String?  @map("phone") @db.VarChar(20)
+  dateOfBirth           DateTime @map("date_of_birth") @db.Date
+  address               Json     @db.JsonB
+  ownershipPercentage   Decimal  @map("ownership_percentage") @db.Decimal(5, 2)
+  title                 String?  @map("title") @db.VarChar(100)
+  verificationStatus    String   @default("pending") @map("verification_status") @db.VarChar(20)
+  version               Int      @default(1) @db.SmallInt
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant              Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  documents             Document[]
+
+  @@index([merchantId])
+  @@map("owner")
+}
+
+// Bank accounts with envelope encryption
+model BankAccount {
+  id                   String   @id @default(cuid()) @db.Text
+  merchantId            String   @map("merchant_id") @db.Text
+  accountNumberLast4    String   @map("account_number_last4") @db.VarChar(4)
+  routingNumber         String   @map("routing_number") @db.VarChar(20)
+  accountType           String   @map("account_type") @db.VarChar(20)
+  currency              String   @db.VarChar(3)
+  accountHolderName     String   @map("account_holder_name") @db.VarChar(255)
+  verificationStatus    String   @default("pending") @map("verification_status") @db.VarChar(20)
+  verificationMethod    String?  @map("verification_method") @db.VarChar(20)
+  isDefault             Boolean  @default(false) @map("is_default")
+  encryptedAccountNumber String   @map("encrypted_account_number") @db.Text
+  version               Int      @default(1) @db.SmallInt
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant              Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  verifications         Verification[]
+
+  @@index([merchantId])
+  @@map("bankAccount")
+}
+
+// Application for onboarding workflow
+model Application {
+  id                   String   @id @default(cuid()) @db.Text
+  merchantId            String?  @map("merchant_id") @db.Text
+  status                String   @default("draft") @db.Text
+  segment               String   @db.Text
+  businessProfile       Json     @map("business_profile") @db.JsonB
+  submittedPayloadHash   String?  @map("submitted_payload_hash") @db.Text
+  termsAccepted         Boolean  @default(false) @map("terms_accepted")
+  expiresAt             DateTime? @map("expires_at") @db.Timestamptz(6)
+  version               Int      @default(1) @db.SmallInt
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant              Merchant? @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  requirements          Requirement[]
+  documents             Document[]
+  riskAssessments       RiskAssessment[]
+  underwritingDecisions UnderwritingDecision[]
+  onboardingSessions    OnboardingSession[]
+
+  @@index([merchantId])
+  @@index([status])
+  @@map("applications")
+}
+
+// Dynamic requirements based on jurisdiction and risk
+model Requirement {
+  id              String   @id @default(cuid()) @db.Text
+  applicationId   String   @map("application_id") @db.Text
+  type            String   @db.Text
+  currentlyDue    Boolean  @default(false) @map("currently_due")
+  satisfiedAt     DateTime? @map("satisfied_at") @db.Timestamptz(6)
+  version         Int      @default(1) @db.SmallInt
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  application      Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([currentlyDue])
+  @@map("requirements")
+}
+
+// Document evidence
+model Document {
+  id                String   @id @default(cuid()) @db.Text
+  merchantId         String   @map("merchant_id") @db.Text
+  applicationId      String?  @map("application_id") @db.Text
+  personId           String?  @map("person_id") @db.Text
+  documentType       String   @map("document_type") @db.VarChar(50)
+  filePath           String   @map("file_path") @db.VarChar(500)
+  fileName           String   @map("file_name") @db.VarChar(255)
+  contentType         String   @map("content_type") @db.VarChar(100)
+  fileSize           Int      @map("file_size")
+  verificationStatus String   @default("pending") @map("verification_status") @db.VarChar(20)
+  metadata           Json?    @db.JsonB
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  merchant           Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  application         Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  person              Person? @relation(fields: [personId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@index([applicationId])
+  @@index([personId])
+  @@map("documents")
+}
+
+// Verification with provider cascade
+model Verification {
+  id              String   @id @default(cuid()) @db.Text
+  merchantId      String   @map("merchant_id") @db.Text
+  bankAccountId   String?  @map("bank_account_id") @db.Text
+  type            String   @db.Text
+  status          String   @db.Text
+  provider        String?  @db.VarChar(50)
+  findings        Json     @db.JsonB
+  requestData     Json?    @map("request_data") @db.JsonB
+  responseData    Json?    @map("response_data") @db.JsonB
+  errorMessage    String?  @map("error_message") @db.Text
+  startedAt       DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz(6)
+
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  bankAccount     BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+  results         VerificationResult[]
+  adjudications    Adjudication[]
+
+  @@index([merchantId])
+  @@index([bankAccountId])
+  @@index([status])
+  @@map("verificationAttempt")
+}
+
+// Verification results per provider attempt
+model VerificationResult {
+  id              String   @id @default(cuid()) @db.Text
+  verificationId  String   @map("verification_id") @db.Text
+  provider        String   @db.VarChar(50)
+  outcome         String   @db.Text
+  rawResponse     Json     @map("raw_response") @db.JsonB
+  normalizedData  Json     @map("normalized_data") @db.JsonB
+  latencyMs       Int      @map("latency_ms")
+  cost            Decimal  @map("cost") @db.Decimal(10, 2)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  verification     Verification @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@index([verificationId])
+  @@map("verification_results")
+}
+
+// Adjudication for screening hits
+model Adjudication {
+  id              String   @id @default(cuid()) @db.Text
+  verificationId  String   @map("verification_id") @db.Text
+  adjudicatedBy   String   @map("adjudicated_by") @db.Text
+  decision        String   @db.Text
+  rationale       String   @db.Text
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  verification     Verification @relation(fields: [verificationId], references: [id], onDelete: Cascade)
+
+  @@index([verificationId])
+  @@map("adjudications")
+}
+
+// Risk profile (single record per merchant)
+model RiskProfile {
+  id                   String   @id @default(cuid()) @db.Text
+  merchantId            String   @map("merchant_id") @db.Text
+  riskScore             Int      @map("risk_score")
+  riskLevel             String   @map("risk_level") @db.VarChar(20)
+  tier                  String   @db.VarChar(20)
+  factors               Json     @db.JsonB
+  networkLinks          Json     @map("network_links") @db.JsonB
+  version               Int      @default(1) @db.SmallInt
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant              Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId])
+  @@map("risk_profiles")
+}
+
+// Risk assessments (snapshot-based)
+model RiskAssessment {
+  id              String   @id @default(cuid()) @db.Text
+  merchantId      String   @map("merchant_id") @db.Text
+  applicationId   String?  @map("application_id") @db.Text
+  inputSnapshotHash String   @map("input_snapshot_hash") @db.Text
+  riskScore       Int      @map("risk_score")
+  riskLevel       String   @map("risk_level") @db.VarChar(20)
+  factors         Json     @db.JsonB
+  recommendations Json?    @db.JsonB
+  assessmentType  String   @map("assessment_type") @db.VarChar(20)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  application     Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@index([applicationId])
+  @@map("riskAssessment")
+}
+
+// Immutable underwriting decisions
+model UnderwritingDecision {
+  id                 String   @id @default(cuid()) @db.Text
+  merchantId         String   @map("merchant_id") @db.Text
+  applicationId      String?  @map("application_id") @db.Text
+  decision           String   @db.VarChar(20)
+  reason             String?  @db.Text
+  processingLimits   Json?    @map("processing_limits") @db.JsonB
+  pricingTier        String?  @map("pricing_tier") @db.VarChar(50)
+  underwritingType   String   @map("underwriting_type") @db.VarChar(20)
+  policyVersion      String   @map("policy_version") @db.Text
+  ruleTrace          Json     @map("rule_trace") @db.JsonB
+  reviewedBy         String?  @map("reviewed_by") @db.Text
+  reviewedAt         DateTime @default(now()) @map("reviewed_at") @db.Timestamptz(6)
+  expiresAt          DateTime? @map("expires_at") @db.Timestamptz(6)
+  overriddenBy       String?  @map("overridden_by") @db.Text
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  merchant           Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  application        Application? @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  underwritingPolicy UnderwritingPolicy @relation(fields: [policyVersion], references: [version], onDelete: Restrict)
+  override           UnderwritingDecision? @relation("DecisionOverride", fields: [overriddenBy], references: [id], onDelete: Cascade)
+  overrides          UnderwritingDecision[] @relation("DecisionOverride")
+  conditions         DecisionCondition[]
+
+  @@index([merchantId])
+  @@index([applicationId])
+  @@index([decision])
+  @@map("underwritingDecision")
+}
+
+// Underwriting policy version
+model UnderwritingPolicy {
+  version            String   @id @db.Text
+  name               String   @db.Text
+  isActive           Boolean  @default(true) @map("is_active")
+  policy             Json     @db.JsonB
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  decisions          UnderwritingDecision[]
+
+  @@index([isActive])
+  @@map("underwriting_policies")
+}
+
+// Conditions on decisions
+model DecisionCondition {
+  id                   String   @id @default(cuid()) @db.Text
+  decisionId           String   @map("decision_id") @db.Text
+  type                 String   @db.Text
+  description          String   @db.Text
+  satisfied            Boolean  @default(false)
+  blocksActivation     Boolean  @default(false) @map("blocks_activation")
+  satisfiedAt           DateTime? @map("satisfied_at") @db.Timestamptz(6)
+  dueDate              DateTime? @map("due_date") @db.Timestamptz(6)
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  decision             UnderwritingDecision @relation(fields: [decisionId], references: [id], onDelete: Cascade)
+
+  @@index([decisionId])
+  @@index([satisfied])
+  @@map("decision_conditions")
+}
+
+// API keys for authentication
+model ApiKey {
+  id              String   @id @default(cuid()) @db.Text
+  organizationId   String   @map("organization_id") @db.Text
+  prefix          String   @db.VarChar(10)
+  secretHash      String   @map("secret_hash") @db.Text
+  scope           String[] @default([])
+  cidrAllowlist    String?  @map("cidr_allowlist") @db.Inet
+  isActive        Boolean  @default(true) @map("is_active")
+  expiresAt       DateTime? @map("expires_at") @db.Timestamptz(6)
+  lastUsedAt      DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([prefix])
+  @@map("api_keys")
+}
+
+// Webhook endpoints
+model WebhookEndpoint {
+  id           String   @id @default(cuid()) @db.Text
+  organizationId String   @map("organization_id") @db.Text
+  url          String   @db.VarChar(500)
+  events       Json     @db.JsonB
+  secret       String   @db.VarChar(255)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
+
+  @@index([organizationId])
+  @@map("webhook")
+}
+
+// Webhook delivery tracking
+model WebhookDelivery {
+  id             String   @id @default(cuid()) @db.Text
+  webhookId       String   @map("webhook_id") @db.Text
+  eventId         String   @map("event_id") @db.Text
+  subjectId       String   @map("subject_id") @db.Text
+  attemptNumber  Int      @map("attempt_number") @db.SmallInt
+  status          String   @db.VarChar(20)
+  statusCode      Int?     @map("status_code")
+  responseBody    String?  @map("response_body") @db.Text
+  nextAttemptAt   DateTime? @map("next_attempt_at") @db.Timestamptz(6)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  webhookEndpoint WebhookEndpoint @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([eventId])
+  @@index([subjectId])
+  @@index([status])
+  @@map("webhook_deliveries")
+}
+
+// Domain events with outbox pattern
+model Event {
+  id          String   @id @default(cuid()) @db.Text
+  eventType   String   @map("event_type") @db.Text
+  subjectId   String   @map("subject_id") @db.Text
+  subjectType String   @map("subject_type") @db.Text
+  data        Json     @db.JsonB
+  publishedAt DateTime @default(now()) @map("published_at") @db.Timestamptz(6)
+
+  outbox      Outbox?
+
+  @@index([subjectId])
+  @@index([eventType])
+  @@index([publishedAt])
+  @@map("events")
+}
+
+// Outbox for reliable event delivery
+model Outbox {
+  id        String   @id @default(cuid()) @db.Text
+  eventId   String   @map("event_id") @db.Text
+  processed Boolean  @default(false)
+  lockedAt  DateTime? @map("locked_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  event     Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId])
+  @@index([processed])
+  @@index([lockedAt])
+  @@map("outbox")
+}
+
+// Product enablements
+model ProductEnablement {
+  id          String   @id @default(cuid()) @db.Text
+  merchantId   String   @map("merchant_id") @db.Text
+  productType String   @map("product_type") @db.Text
+  enabled     Boolean  @default(true)
+  config      Json     @db.JsonB
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant    Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("product_enablings")
+}
+
+// Pricing assignments
+model PricingAssignment {
+  id              String   @id @default(cuid()) @db.Text
+  merchantId       String   @map("merchant_id") @db.Text
+  pricingScheduleId String   @map("pricing_schedule_id") @db.Text
+  config          Json     @db.JsonB
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("pricing_assignments")
+}
+
+// Payout configurations
+model PayoutConfiguration {
+  id              String   @id @default(cuid()) @db.Text
+  merchantId       String   @map("merchant_id") @db.Text
+  bankAccountId   String   @map("bank_account_id") @db.Text
+  scheduleType    String   @map("schedule_type") @db.Text
+  config          Json     @db.JsonB
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("payout_configurations")
+}
+
+// Merchant amendments
+model MerchantAmendment {
+  id              String   @id @default(cuid()) @db.Text
+  merchantId       String   @map("merchant_id") @db.Text
+  type            String   @db.Text
+  previousValue   Json     @map("previous_value") @db.JsonB
+  newValue        Json     @map("new_value") @db.JsonB
+  reason          String   @db.Text
+  amendedBy       String   @map("amended_by") @db.Text
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  merchant        Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("merchant_amendments")
+}
+
+// Onboarding sessions for embedded/hosted flows
+model OnboardingSession {
+  id              String   @id @default(cuid()) @db.Text
+  applicationId   String   @map("application_id") @db.Text
+  sessionType     String   @map("session_type") @db.Text
+  ipAddress       String   @map("ip_address") @db.Inet
+  userAgent       String   @map("user_agent") @db.Text
+  completedSteps Json     @map("completed_steps") @db.JsonB
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  application      Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@map("onboarding_sessions")
+}
+
+// Audit log with hash-chaining
+model AuditLog {
+  id            String   @id @default(cuid()) @db.Text
+  merchantId    String?  @map("merchant_id") @db.Text
+  actorId       String   @map("actor_id") @db.Text
+  actorType     String   @map("actor_type") @db.VarChar(20)
+  onBehalfOf    String?  @map("on_behalf_of") @db.Text
+  action        String   @db.VarChar(100)
+  resourceType  String   @map("resource_type") @db.VarChar(50)
+  resourceId    String?  @map("resource_id") @db.Text
+  changes       Json?    @db.JsonB
+  ipAddress     String?  @map("ip_address") @db.Inet
+  userAgent     String?  @map("user_agent") @db.Text
+  legalBasis    String?  @map("legal_basis") @db.Text
+  previousHash  String?  @map("previous_hash") @db.Text
+  hash          String   @db.Text
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  merchant      Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+
+  @@index([merchantId])
+  @@index([createdAt])
+  @@index([hash])
+  @@map("audit_logs")
+}
